@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertGpsPoint, addDeviceCommand, updateCommandStatus, getPendingCommands } from './db.js';
+import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,6 +157,17 @@ async function handleEvent(deviceId, eventType, payloadObj, topic) {
     }
   }
 
+  // 若为 GNSS 事件且包含状态/报错信息，则写入 status 表（便于查询与告警）
+  if (eventType === 'gnss') {
+    try {
+      if (payloadObj.status !== undefined || payloadObj.message !== undefined) {
+        insertStatus({ deviceId, ts: payloadObj.ts ?? Date.now(), status: payloadObj.status ?? null, message: payloadObj.message ?? null, rawJson: JSON.stringify(payloadObj), source: 'mqtt-event', createdAt: Date.now() });
+      }
+    } catch (e) {
+      emitter.emit('error', { error: e, context: { deviceId, eventType } });
+    }
+  }
+
   emitter.emit('event', { deviceId, eventType: eventType || null, raw: payloadObj });
 }
 
@@ -203,6 +214,15 @@ async function handleStatus(deviceId, payloadObj, topic) {
 
   const online = payloadObj.online === true || payloadObj.online === 'true' || payloadObj.online === 1 || payloadObj.online === '1';
   const ts = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
+  // 若为设备上报的 status（包含状态/报错，如 GNSS 报错），写入 status 表
+  try {
+    if (payloadObj.status !== undefined || payloadObj.message !== undefined) {
+      insertStatus({ deviceId, ts: payloadObj.ts ?? ts, status: payloadObj.status ?? null, message: payloadObj.message ?? null, rawJson: JSON.stringify(payloadObj), source: 'mqtt-status', createdAt: Date.now() });
+    }
+  } catch (e) {
+    emitter.emit('error', { error: e, context: { deviceId } });
+  }
+
   emitter.emit('status', { deviceId, online, ts, raw: payloadObj });
 }
 

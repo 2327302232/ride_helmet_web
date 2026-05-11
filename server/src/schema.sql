@@ -41,6 +41,20 @@ CREATE TABLE IF NOT EXISTS device_commands (
 
 CREATE INDEX IF NOT EXISTS idx_cmd_device_ts ON device_commands(device_id, ts);
 
+-- Status table: 存放设备层面的状态与错误上报（例如 GNSS 报错）
+CREATE TABLE IF NOT EXISTS status (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  status TEXT,
+  message TEXT,
+  source TEXT DEFAULT 'mqtt',
+  raw_json TEXT,
+  created_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_device_ts ON status(device_id, ts);
+
 -- Devices table: 存放设备元信息（安全使用 IF NOT EXISTS）
 CREATE TABLE IF NOT EXISTS devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

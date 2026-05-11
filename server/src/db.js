@@ -48,6 +48,13 @@ function prepareStatements() {
 
   stmts.getPending = db.prepare(`SELECT * FROM device_commands WHERE device_id = @device_id AND status IN ('queued','sent') ORDER BY ts ASC`);
 
+  // status table statements: 存放设备层面的状态/错误（例如 GNSS 报错）
+  stmts.insertStatus = db.prepare(`INSERT INTO status (device_id, ts, status, message, source, raw_json, created_at)
+    VALUES (@device_id, @ts, @status, @message, @source, @raw_json, @created_at)`);
+
+  stmts.listStatus = db.prepare(`SELECT device_id AS deviceId, ts, status, message, source, raw_json, created_at FROM status
+    WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
+
   // devices / device_sequences statements
   stmts.insertDevice = db.prepare(`INSERT INTO devices (device_id, serial, name, user_id, metadata, created_at)
     VALUES (@device_id, @serial, @name, @user_id, @metadata, @created_at)`);
@@ -187,6 +194,46 @@ export function insertGpsPoint({ deviceId, ts, lng, lat, speed = null, heading =
       return { lastInsertRowid: info.lastInsertRowid, changes: info.changes, seq: seqRes.seq };
     } catch (e) {
       console.warn('[DB] incDeviceSequence failed for gps_points', e && e.message ? e.message : e);
+      return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+    }
+  } catch (err) {
+    throw err;
+  }
+}
+
+/**
+ * Insert a device status/event into status table.
+ * @param {Object} param
+ * @param {string} param.deviceId
+ * @param {number} param.ts
+ * @param {string} [param.status]
+ * @param {string} [param.message]
+ * @param {string} [param.source]
+ * @param {string} [param.rawJson]
+ * @param {number} [param.createdAt]
+ * @returns {{lastInsertRowid:number,changes:number}} 返回插入信息。发生错误时抛出异常。
+ */
+export function insertStatus({ deviceId, ts, status = null, message = null, source = 'mqtt', rawJson = null, createdAt = null } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId || ts == null) {
+    throw new Error('Missing required fields: deviceId, ts');
+  }
+  try {
+    const info = stmts.insertStatus.run({
+      device_id: String(deviceId),
+      ts: Number(ts),
+      status: status == null ? null : String(status),
+      message: message == null ? null : String(message),
+      source: source == null ? 'mqtt' : String(source),
+      raw_json: rawJson == null ? null : String(rawJson),
+      created_at: createdAt == null ? null : Number(createdAt)
+    });
+    // 尝试为该设备在 device_sequences 表上递增序号（容错，不阻塞主流程）
+    try {
+      const seqRes = incDeviceSequence({ tableName: 'status', deviceId: String(deviceId), delta: 1 });
+      return { lastInsertRowid: info.lastInsertRowid, changes: info.changes, seq: seqRes.seq };
+    } catch (e) {
+      console.warn('[DB] incDeviceSequence failed for status', e && e.message ? e.message : e);
       return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
     }
   } catch (err) {
