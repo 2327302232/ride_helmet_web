@@ -115,6 +115,18 @@ async function onRefresh() {
   loading.value = true
   try {
     await loadDevicesList()
+    // 请求后端下发状态请求命令到设备（后端会 publish 到 MQTT）
+    try {
+      if (deviceId.value) {
+        const reqUrl = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(deviceId.value)}/request_status`
+        await fetch(reqUrl, { method: 'POST' }).catch(() => null)
+        // 给设备一点时间回复（设备通常会立即回复），然后再次查询在线状态
+        await new Promise((r) => setTimeout(r, 800))
+        await loadDeviceOnlineFromServer(deviceId.value)
+      }
+    } catch (e) {
+      console.warn('request_status error', e)
+    }
   } finally {
     loading.value = false
   }
