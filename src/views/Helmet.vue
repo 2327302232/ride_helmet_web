@@ -115,7 +115,7 @@ function handleWsMessage(msg) {
   }
 }
 
-function waitForCmdReply(cmdId, timeout = 3000) {
+function waitForCmdReply(cmdId, timeout = 5000) {
   return new Promise((resolve, reject) => {
     if (!cmdId) return reject(new Error('no cmdId'))
     const timer = setTimeout(() => {
@@ -254,7 +254,7 @@ async function onRefresh() {
             simStatus.value = 'pending'
             ensureSocket()
             subscribeDevice(deviceId.value)
-            const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
+            const reply = await waitForCmdReply(cmdId, 5000).catch(() => null)
             if (reply) {
               // reply 可能来自 cmd_ack 或 status
               if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {
