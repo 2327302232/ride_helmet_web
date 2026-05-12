@@ -119,14 +119,61 @@ async function onRefresh() {
   loading.value = true
   try {
     await loadDevicesList()
-    // 请求后端下发状态请求命令到设备（后端会 publish 到 MQTT）
+    // 请求后端下发状态请求命令到设备（后端会 publish 到 MQTT），并轮询该次下发的结果
     try {
       if (deviceId.value) {
         const reqUrl = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(deviceId.value)}/request_status`
-        await fetch(reqUrl, { method: 'POST' }).catch(() => null)
-        // 给设备一点时间回复（设备通常会立即回复），然后再次查询在线状态
-        await new Promise((r) => setTimeout(r, 800))
-        await loadDeviceOnlineFromServer(deviceId.value)
+        const postRes = await fetch(reqUrl, { method: 'POST' }).catch(() => null)
+        const postData = postRes && postRes.ok ? await postRes.json().catch(() => null) : null
+        const cmdId = postData && postData.cmdId ? postData.cmdId : null
+        if (cmdId) {
+          // 轮询 result 接口，优先使用本次请求的回复决定在线状态
+          const pollTimeout = 5000
+          const pollInterval = 300
+          const start = Date.now()
+          let decided = false
+          while (Date.now() - start < pollTimeout) {
+            try {
+              const rUrl = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(deviceId.value)}/request_status/${encodeURIComponent(cmdId)}/result`
+              const r = await fetch(rUrl).catch(() => null)
+              if (r && r.ok) {
+                const d = await r.json().catch(() => null)
+                if (d) {
+                  // 优先看 ackPayload 中的 online 字段
+                  if (d.ackPayload && typeof d.ackPayload === 'object' && Object.prototype.hasOwnProperty.call(d.ackPayload, 'online')) {
+                    const on = d.ackPayload.online
+                    if (on === true || on === 1 || on === '1' || on === 'true') simStatus.value = 'online'
+                    else simStatus.value = 'offline'
+                    decided = true
+                    break
+                  }
+
+                  // 再看 statusRecords 中解析出的 onlineFromStatus
+                  if (d.onlineFromStatus !== undefined && d.onlineFromStatus !== null) {
+                    simStatus.value = d.onlineFromStatus ? 'online' : 'offline'
+                    decided = true
+                    break
+                  }
+
+                  // 最后看命令本身的状态（acked -> online，failed/expired -> offline）
+                  if (d.cmd && d.cmd.status) {
+                    if (d.cmd.status === 'acked') { simStatus.value = 'online'; decided = true; break }
+                    if (d.cmd.status === 'failed' || d.cmd.status === 'expired') { simStatus.value = 'offline'; decided = true; break }
+                  }
+                }
+              }
+            } catch (e) {
+              // ignore and retry
+            }
+            await new Promise((r) => setTimeout(r, pollInterval))
+          }
+
+          // 若在轮询期内未决定，则回退到后端持久化的 online（若有），否则走本地模拟
+          if (!decided) await loadDeviceOnlineFromServer(deviceId.value)
+        } else {
+          // 无 cmdId 时回退到后端持久化的 online
+          await loadDeviceOnlineFromServer(deviceId.value)
+        }
       }
     } catch (e) {
       console.warn('request_status error', e)

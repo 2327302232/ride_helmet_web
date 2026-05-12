@@ -1,5 +1,5 @@
 import express from 'express'
-import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline, getLatestStatus } from '../db.js'
+import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline, getLatestStatus, db } from '../db.js'
 import { publishCommand } from '../mqtt.js'
 
 const router = express.Router()
@@ -84,6 +84,53 @@ router.post('/api/devices/:deviceId/request_status', async (req, res) => {
     }
   } catch (err) {
     console.error('POST /api/devices/:deviceId/request_status error', err)
+    return res.status(500).json({ error: err?.message || String(err) })
+  }
+})
+
+// GET /api/devices/:deviceId/request_status/:cmdId/result
+// 返回与该次下发命令相关的 ack 与 status 记录（只包含 ts >= cmd.ts 的 status）
+router.get('/api/devices/:deviceId/request_status/:cmdId/result', async (req, res) => {
+  try {
+    const { deviceId, cmdId } = req.params
+    if (!cmdId) return res.status(400).json({ error: 'cmdId required' })
+
+    // 直接查询 device_commands 表
+    const cmdRow = db.prepare('SELECT * FROM device_commands WHERE cmd_id = ?').get(cmdId)
+    if (!cmdRow) return res.status(404).json({ error: 'cmd_not_found' })
+    if (String(cmdRow.device_id) !== String(deviceId)) return res.status(400).json({ error: 'device_mismatch' })
+
+    // 解析 ack_payload（若存在）
+    let ackPayload = null
+    try {
+      if (cmdRow.ack_payload) ackPayload = JSON.parse(cmdRow.ack_payload)
+    } catch (e) { ackPayload = cmdRow.ack_payload }
+
+    // 查询从 cmd.ts 开始的 status 记录（历史状态），优先按 raw_json 中的 online 字段判断
+    const statusStmt = db.prepare('SELECT id, device_id AS deviceId, ts, status, message, source, raw_json FROM status WHERE device_id = ? AND ts >= ? ORDER BY ts ASC')
+    const statusRows = statusStmt.all(deviceId, cmdRow.ts)
+
+    let onlineFromStatus = null
+    for (const s of statusRows) {
+      if (s && s.raw_json) {
+        try {
+          const parsed = JSON.parse(s.raw_json)
+          if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'online')) {
+            const on = parsed.online
+            if (on === true || on === 1 || on === '1' || on === 'true') onlineFromStatus = true
+            else if (on === false || on === 0 || on === '0' || on === 'false') onlineFromStatus = false
+            else onlineFromStatus = Boolean(on)
+            break
+          }
+        } catch (e) {
+          // ignore parse errors
+        }
+      }
+    }
+
+    return res.json({ cmd: { cmdId: cmdRow.cmd_id, deviceId: cmdRow.device_id, ts: cmdRow.ts, status: cmdRow.status, sentTs: cmdRow.sent_ts, ackTs: cmdRow.ack_ts }, ackPayload, statusRecords: statusRows, onlineFromStatus })
+  } catch (err) {
+    console.error('GET /api/devices/:deviceId/request_status/:cmdId/result error', err)
     return res.status(500).json({ error: err?.message || String(err) })
   }
 })
