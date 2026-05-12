@@ -19,6 +19,7 @@ import trackRouter from './api/track.js';
 import devicesRouter from './api/devices.js';
 import usersRouter from './api/users.js';
 import meRouter from './api/me.js'
+import { WebSocketServer } from 'ws';
 
 let shuttingDown = false;
 let httpServer = null;
@@ -36,6 +37,22 @@ async function start() {
     console.log('src/server.js: MQTT client started (see mqtt logs for subscriptions).');
 
     // 挂载并启动内置 HTTP 接口（若需要使用 express）
+    // WebSocket 相关变量提升到 start() 的作用域，便于后续 MQTT 事件也能广播
+    let wss = null;
+    const wsSubscriptions = new Map(); // deviceId -> Set(ws)
+    const wsReverse = new Map(); // ws -> Set(deviceId)
+
+    function broadcastToDevice(deviceId, messageObj) {
+      try {
+        const set = wsSubscriptions.get(String(deviceId));
+        if (!set || set.size === 0) return;
+        const payload = JSON.stringify(messageObj);
+        for (const s of set) {
+          try { if (s && s.readyState === s.OPEN) s.send(payload); } catch (e) { /* ignore per-socket errors */ }
+        }
+      } catch (e) { /* ignore */ }
+    }
+
     try {
       const app = express();
       // Simple CORS middleware to allow frontend dev server access.
@@ -60,6 +77,67 @@ async function start() {
 
       const port = process.env.PORT ? Number(process.env.PORT) : 8888;
       httpServer = app.listen(port, () => console.log(`HTTP server listening on port ${port}`));
+
+      try {
+        wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+        wss.on('connection', (socket, req) => {
+          socket.isAlive = true;
+          socket.on('pong', () => { socket.isAlive = true; });
+
+          socket.on('message', (msg) => {
+            try {
+              const str = typeof msg === 'string' ? msg : msg.toString();
+              const obj = JSON.parse(str);
+              if (!obj || !obj.type) return;
+              if (obj.type === 'subscribe' && obj.deviceId) {
+                const dev = String(obj.deviceId);
+                const set = wsSubscriptions.get(dev) || new Set();
+                set.add(socket);
+                wsSubscriptions.set(dev, set);
+                const sset = wsReverse.get(socket) || new Set();
+                sset.add(dev);
+                wsReverse.set(socket, sset);
+                try { socket.send(JSON.stringify({ type: 'subscribed', deviceId: dev })); } catch (e) {}
+              } else if (obj.type === 'unsubscribe' && obj.deviceId) {
+                const dev = String(obj.deviceId);
+                const set = wsSubscriptions.get(dev);
+                if (set) { set.delete(socket); if (set.size === 0) wsSubscriptions.delete(dev); }
+                const sset = wsReverse.get(socket);
+                if (sset) { sset.delete(dev); if (sset.size === 0) wsReverse.delete(socket); }
+                try { socket.send(JSON.stringify({ type: 'unsubscribed', deviceId: dev })); } catch (e) {}
+              } else if (obj.type === 'ping') {
+                try { socket.send(JSON.stringify({ type: 'pong' })); } catch (e) {}
+              }
+            } catch (e) {
+              // ignore parse errors
+            }
+          });
+
+          socket.on('close', () => {
+            const sset = wsReverse.get(socket);
+            if (sset) {
+              for (const dev of sset) {
+                const set = wsSubscriptions.get(dev);
+                if (set) { set.delete(socket); if (set.size === 0) wsSubscriptions.delete(dev); }
+              }
+            }
+            wsReverse.delete(socket);
+          });
+        });
+
+        const wsPingInterval = setInterval(() => {
+          wss.clients.forEach((ws) => {
+            if (ws.isAlive === false) return ws.terminate();
+            ws.isAlive = false;
+            try { ws.ping(); } catch (e) {}
+          });
+        }, 30000);
+
+        wss.on('close', () => clearInterval(wsPingInterval));
+        console.log('WebSocket server started at /ws');
+      } catch (e) {
+        console.warn('Failed to start WebSocket server', e && e.message ? e.message : e);
+      }
     } catch (e) {
       console.warn('src/server.js: failed to start HTTP server', e && e.message ? e.message : e);
     }
@@ -119,11 +197,17 @@ async function start() {
         } catch (err) {
           console.error(`[ACK] DB update failed for cmdId ${cmdId}:`, err);
         }
+
+        // 广播到通过 WebSocket 订阅该 deviceId 的前端客户端（若有）
+        try { if (payload && payload.deviceId) broadcastToDevice(payload.deviceId, { type: 'cmd_ack', payload }); } catch (e) {}
       } catch (e) {
         console.error('[ACK] handler error:', e);
       }
     });
-    onMqtt('status', (s) => console.log('[MQTT EVENT] status', JSON.stringify(s)));
+    onMqtt('status', (s) => {
+      console.log('[MQTT EVENT] status', JSON.stringify(s));
+      try { if (s && s.deviceId) broadcastToDevice(s.deviceId, { type: 'status', payload: s }); } catch (e) {}
+    });
     onMqtt('event', (e) => console.log('[MQTT EVENT] event', JSON.stringify(e)));
     onMqtt('error', (err) => console.error('[MQTT EVENT] error', err && err.error ? err.error : err));
 

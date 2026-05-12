@@ -30,7 +30,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch, computed } from 'vue'
+import { onMounted, ref, watch, computed, onUnmounted } from 'vue'
 
 onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
@@ -42,10 +42,98 @@ const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
 const commandBasis = ref(null)
 
+// WebSocket for realtime reply delivery
+const ws = ref(null)
+const wsConnected = ref(false)
+const pendingResolvers = new Map() // cmdId -> resolver
+
+function getWsUrl(base) {
+  let url = (base || '').replace(/\/$/, '')
+  if (url.startsWith('http://')) url = url.replace('http://', 'ws://')
+  else if (url.startsWith('https://')) url = url.replace('https://', 'wss://')
+  else if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+  }
+  return url + '/ws'
+}
+
+function ensureSocket() {
+  try {
+    if (ws.value && (ws.value.readyState === WebSocket.OPEN || ws.value.readyState === WebSocket.CONNECTING)) return
+    const url = getWsUrl(backendBase)
+    ws.value = new WebSocket(url)
+    wsConnected.value = false
+    ws.value.onopen = () => { wsConnected.value = true; if (deviceId.value) subscribeDevice(deviceId.value) }
+    ws.value.onclose = () => { wsConnected.value = false }
+    ws.value.onerror = () => { wsConnected.value = false }
+    ws.value.onmessage = (ev) => {
+      try { const msg = JSON.parse(ev.data); handleWsMessage(msg) } catch (e) {}
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+function subscribeDevice(devId) {
+  try {
+    if (!devId) return
+    ensureSocket()
+    if (!ws.value) return
+    if (ws.value.readyState !== WebSocket.OPEN) {
+      // try again shortly
+      setTimeout(() => subscribeDevice(devId), 250)
+      return
+    }
+    try { ws.value.send(JSON.stringify({ type: 'subscribe', deviceId: devId })) } catch (e) {}
+  } catch (e) {}
+}
+
+function handleWsMessage(msg) {
+  if (!msg || !msg.type) return
+  if (msg.type === 'cmd_ack') {
+    const p = msg.payload
+    if (p && p.cmdId && pendingResolvers.has(p.cmdId)) {
+      const fn = pendingResolvers.get(p.cmdId)
+      pendingResolvers.delete(p.cmdId)
+      try { fn(p) } catch (e) {}
+    }
+  } else if (msg.type === 'status') {
+    const p = msg.payload
+    // status payload may include raw object with cmdId
+    let cmdId = null
+    try {
+      if (p && p.raw) {
+        const raw = p.raw
+        if (raw && (raw.cmdId || raw.cmd_id)) cmdId = raw.cmdId || raw.cmd_id
+      }
+    } catch (e) {}
+    if (cmdId && pendingResolvers.has(cmdId)) {
+      const fn = pendingResolvers.get(cmdId)
+      pendingResolvers.delete(cmdId)
+      try { fn(p) } catch (e) {}
+    }
+  }
+}
+
+function waitForCmdReply(cmdId, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    if (!cmdId) return reject(new Error('no cmdId'))
+    const timer = setTimeout(() => {
+      if (pendingResolvers.has(cmdId)) pendingResolvers.delete(cmdId)
+      reject(new Error('timeout'))
+    }, timeout)
+    pendingResolvers.set(cmdId, (payload) => {
+      clearTimeout(timer)
+      resolve(payload)
+    })
+  })
+}
+
 const statusLabel = computed(() => {
   switch (simStatus.value) {
     case 'online': return '在线'
     case 'offline': return '离线'
+    case 'pending': return '请求中'
     case 'all': return '全部'
     default: return '未知'
   }
@@ -104,7 +192,9 @@ async function loadCommandBasis(devId) {
         const latest = commandBasis.value[0]
         const s = latest.status
         if (s === 'acked') simStatus.value = 'online'
-        else simStatus.value = 'offline'
+        else if (s === 'failed' || s === 'expired') simStatus.value = 'offline'
+        else if (s === 'sent' || s === 'queued') simStatus.value = 'pending'
+        else simStatus.value = 'unknown'
       }
     }
   } catch (e) {
@@ -158,49 +248,29 @@ async function onRefresh() {
         const postData = postRes && postRes.ok ? await postRes.json().catch(() => null) : null
         const cmdId = postData && postData.cmdId ? postData.cmdId : null
         if (cmdId) {
-          // 轮询 result 接口，优先使用本次请求的回复决定在线状态
-          const pollTimeout = 5000
-          const pollInterval = 300
-          const start = Date.now()
-          let decided = false
-          while (Date.now() - start < pollTimeout) {
-            try {
-              const rUrl = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(deviceId.value)}/request_status/${encodeURIComponent(cmdId)}/result`
-              const r = await fetch(rUrl).catch(() => null)
-              if (r && r.ok) {
-                const d = await r.json().catch(() => null)
-                if (d) {
-                  // 优先看 ackPayload 中的 online 字段
-                  if (d.ackPayload && typeof d.ackPayload === 'object' && Object.prototype.hasOwnProperty.call(d.ackPayload, 'online')) {
-                    const on = d.ackPayload.online
-                    if (on === true || on === 1 || on === '1' || on === 'true') simStatus.value = 'online'
-                    else simStatus.value = 'offline'
-                    decided = true
-                    break
-                  }
-
-                  // 再看 statusRecords 中解析出的 onlineFromStatus
-                  if (d.onlineFromStatus !== undefined && d.onlineFromStatus !== null) {
-                    simStatus.value = d.onlineFromStatus ? 'online' : 'offline'
-                    decided = true
-                    break
-                  }
-
-                  // 最后看命令本身的状态（acked -> online，failed/expired -> offline）
-                  if (d.cmd && d.cmd.status) {
-                    if (d.cmd.status === 'acked') { simStatus.value = 'online'; decided = true; break }
-                    if (d.cmd.status === 'failed' || d.cmd.status === 'expired') { simStatus.value = 'offline'; decided = true; break }
-                  }
-                }
+          // 使用 WebSocket 等待设备对本次 cmdId 的回复（ack 或 status），优先使用回复决定在线状态
+          try {
+            ensureSocket()
+            subscribeDevice(deviceId.value)
+            const reply = await waitForCmdReply(cmdId, 10000).catch(() => null)
+            if (reply) {
+              // reply 可能来自 cmd_ack 或 status
+              if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {
+                simStatus.value = 'online'
+              } else if (reply.ok === false || reply.online === false || (reply.payload && reply.payload.online === false)) {
+                simStatus.value = 'offline'
+              } else if (reply.status === 'acked' || (reply.payload && reply.payload.status === 'acked')) {
+                simStatus.value = 'online'
+              } else {
+                // 无法判定则回退到后端持久化状态
+                await loadDeviceOnlineFromServer(deviceId.value)
               }
-            } catch (e) {
-              // ignore and retry
+            } else {
+              await loadDeviceOnlineFromServer(deviceId.value)
             }
-            await new Promise((r) => setTimeout(r, pollInterval))
+          } catch (e) {
+            await loadDeviceOnlineFromServer(deviceId.value)
           }
-
-          // 若在轮询期内未决定，则回退到后端持久化的 online（若有），否则走本地模拟
-          if (!decided) await loadDeviceOnlineFromServer(deviceId.value)
         } else {
           // 无 cmdId 时回退到后端持久化的 online
           await loadDeviceOnlineFromServer(deviceId.value)
@@ -217,6 +287,9 @@ async function onRefresh() {
 }
 
 onMounted(() => { loadDevicesList().catch(() => {}) })
+onUnmounted(() => {
+  try { if (ws.value) ws.value.close() } catch (e) {}
+})
 </script>
 
 <style scoped>
@@ -284,9 +357,11 @@ onMounted(() => { loadDevicesList().catch(() => {}) })
 .status-offline .device-dot { background: #f44336 }
 .status-unknown .device-dot { background: #9e9e9e }
 .status-all .device-dot { background: #1976d2 }
+.status-pending .device-dot { background: #ffb300 }
 .status-text { font-size: 14px; font-weight: 700; white-space: nowrap }
 .status-online .status-text { color:#4caf50 }
 .status-offline .status-text { color:#f44336 }
 .status-unknown .status-text { color:#9e9e9e }
 .status-all .status-text { color:#1976d2 }
+.status-pending .status-text { color:#ffb300 }
 </style>
