@@ -31,7 +31,7 @@ import { onMounted, ref, watch, computed } from 'vue'
 onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
-const deviceId = ref('all')
+const deviceId = ref(null)
 const devicesList = ref([])
 const loading = ref(false)
 const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
@@ -46,20 +46,38 @@ const statusLabel = computed(() => {
   }
 })
 
-watch([deviceId, devicesList], () => {
-  if (deviceId.value === 'all') { simStatus.value = 'all'; return }
-  const found = devicesList.value.find(d => String(d.deviceId || d.device_id) === String(deviceId.value))
-  if (found && found.online !== undefined) {
-    simStatus.value = found.online ? 'online' : 'offline'
-  } else if (found) {
-    const idStr = String(deviceId.value || '')
+async function loadDeviceOnlineFromServer(devId) {
+  if (!devId) { simStatus.value = 'unknown'; return }
+  // 优先从后端获取 device current online 状态
+  try {
+    const url = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(devId)}/online`
+    const res = await fetch(url)
+    if (!res.ok) { throw new Error('fetch failed') }
+    const data = await res.json().catch(() => null)
+    if (data && Object.prototype.hasOwnProperty.call(data, 'online')) {
+      if (data.online === true) simStatus.value = 'online'
+      else if (data.online === false) simStatus.value = 'offline'
+      else simStatus.value = 'unknown'
+      return
+    }
+  } catch (e) {
+    // ignore and fallback to local heuristic
+  }
+
+  // 后端不可用时退回到设备对象内的 online 字段或确定性模拟
+  const found = devicesList.value.find(d => String(d.deviceId || d.device_id) === String(devId))
+  if (found && found.online !== undefined) { simStatus.value = found.online ? 'online' : 'offline'; return }
+  if (found) {
+    const idStr = String(devId || '')
     let sum = 0
     for (let i = 0; i < idStr.length; i++) sum += idStr.charCodeAt(i)
     simStatus.value = (sum % 2 === 0) ? 'online' : 'offline'
-  } else {
-    simStatus.value = 'unknown'
+    return
   }
-})
+  simStatus.value = 'unknown'
+}
+
+watch(deviceId, (v) => { loadDeviceOnlineFromServer(v).catch(() => {}) })
 
 async function loadDevicesList() {
   try {
@@ -89,6 +107,8 @@ async function loadDevicesList() {
     console.warn('loadDevicesList failed', e)
     devicesList.value = []
   }
+  // load current device online state after devices list updated
+  try { loadDeviceOnlineFromServer(deviceId.value).catch(() => {}) } catch (e) {}
 }
 
 async function onRefresh() {

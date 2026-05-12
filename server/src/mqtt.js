@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands } from './db.js';
+import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -221,6 +221,19 @@ async function handleStatus(deviceId, payloadObj, topic) {
     }
   } catch (e) {
     emitter.emit('error', { error: e, context: { deviceId } });
+  }
+
+  // 如果包含 online 字段，则写入 device_status_current（用于快速查询在线/离线）
+  try {
+    if (payloadObj.online !== undefined) {
+      try {
+        setDeviceOnline({ deviceId, online: online, ts, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
+      } catch (e) {
+        emitter.emit('error', { error: e, context: { where: 'setDeviceOnline', deviceId } });
+      }
+    }
+  } catch (e) {
+    // ignore outer
   }
 
   emitter.emit('status', { deviceId, online, ts, raw: payloadObj });

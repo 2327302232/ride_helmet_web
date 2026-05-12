@@ -55,6 +55,16 @@ function prepareStatements() {
   stmts.listStatus = db.prepare(`SELECT device_id AS deviceId, ts, status, message, source, raw_json, created_at FROM status
     WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
 
+  stmts.getLatestStatus = db.prepare(`SELECT device_id AS deviceId, ts, status, message, source, raw_json, created_at FROM status
+    WHERE device_id = @device_id ORDER BY ts DESC LIMIT 1`);
+
+  // device_status_current statements (stores latest online state per device)
+  stmts.upsertDeviceStatus = db.prepare(`INSERT INTO device_status_current (device_id, online, ts, raw_json, updated_at)
+    VALUES (@device_id, @online, @ts, @raw_json, @updated_at)
+    ON CONFLICT(device_id) DO UPDATE SET online = @online, ts = @ts, raw_json = @raw_json, updated_at = @updated_at`);
+
+  stmts.getDeviceStatusCurrent = db.prepare(`SELECT device_id AS deviceId, online, ts, raw_json AS rawJson, updated_at AS updatedAt FROM device_status_current WHERE device_id = @device_id`);
+
   // devices / device_sequences statements
   stmts.insertDevice = db.prepare(`INSERT INTO devices (device_id, serial, name, user_id, metadata, created_at)
     VALUES (@device_id, @serial, @name, @user_id, @metadata, @created_at)`);
@@ -239,6 +249,51 @@ export function insertStatus({ deviceId, ts, status = null, message = null, sour
   } catch (err) {
     throw err;
   }
+}
+
+/**
+ * Upsert device current online state.
+ * @param {Object} param
+ * @param {string} param.deviceId
+ * @param {boolean|number} param.online
+ * @param {number} [param.ts]
+ * @param {string} [param.rawJson]
+ * @param {number} [param.updatedAt]
+ */
+export function setDeviceOnline({ deviceId, online = false, ts = null, rawJson = null, updatedAt = null } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId || ts == null) throw new Error('Missing required fields: deviceId, ts');
+  const info = stmts.upsertDeviceStatus.run({
+    device_id: String(deviceId),
+    online: online ? 1 : 0,
+    ts: Number(ts),
+    raw_json: rawJson == null ? null : String(rawJson),
+    updated_at: updatedAt == null ? Date.now() : Number(updatedAt)
+  });
+  return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+/**
+ * Get current online state for a device.
+ * @param {string} deviceId
+ * @returns {object|null}
+ */
+export function getDeviceOnline(deviceId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  const row = stmts.getDeviceStatusCurrent.get({ device_id: String(deviceId) });
+  if (!row) return null;
+  return { deviceId: row.deviceId, online: !!row.online, ts: row.ts, rawJson: row.rawJson, updatedAt: row.updatedAt };
+}
+
+/**
+ * Get latest status record (status table) for a device.
+ */
+export function getLatestStatus(deviceId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  const row = stmts.getLatestStatus.get({ device_id: String(deviceId) });
+  return row || null;
 }
 
 /**

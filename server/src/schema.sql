@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS status (
 
 CREATE INDEX IF NOT EXISTS idx_status_device_ts ON status(device_id, ts);
 
+-- 当前设备在线表：存放每个设备的最近在线状态（由 LWT / retained 或设备主动上报更新）
+CREATE TABLE IF NOT EXISTS device_status_current (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL UNIQUE,
+  online INTEGER NOT NULL DEFAULT 0,
+  ts INTEGER NOT NULL,
+  raw_json TEXT,
+  updated_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_status_current_device ON device_status_current(device_id);
+
 -- Devices table: 存放设备元信息（安全使用 IF NOT EXISTS）
 CREATE TABLE IF NOT EXISTS devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

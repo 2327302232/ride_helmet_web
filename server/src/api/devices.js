@@ -1,5 +1,6 @@
 import express from 'express'
-import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice } from '../db.js'
+import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline } from '../db.js'
+import { publishCommand } from '../mqtt.js'
 
 const router = express.Router()
 
@@ -27,6 +28,37 @@ router.get('/api/devices/:deviceId', async (req, res) => {
     return res.json({ device: row })
   } catch (err) {
     console.error('GET /api/devices/:deviceId error', err)
+    return res.status(500).json({ error: err?.message || String(err) })
+  }
+})
+
+// GET /api/devices/:deviceId/online  — 返回设备当前在线状态（来自 device_status_current 表）
+router.get('/api/devices/:deviceId/online', async (req, res) => {
+  try {
+    const { deviceId } = req.params
+    const row = getDeviceOnline(deviceId)
+    if (!row) return res.json({ deviceId, online: null, ts: null })
+    return res.json({ deviceId: row.deviceId, online: !!row.online, ts: row.ts, rawJson: row.rawJson, updatedAt: row.updatedAt })
+  } catch (err) {
+    console.error('GET /api/devices/:deviceId/online error', err)
+    return res.status(500).json({ error: err?.message || String(err) })
+  }
+})
+
+// POST /api/devices/:deviceId/request_status  — 向设备下发请求状态的命令
+router.post('/api/devices/:deviceId/request_status', async (req, res) => {
+  try {
+    const { deviceId } = req.params
+    // 下发命令，设备应回复到 /ack 或 /status
+    try {
+      const cmdId = await publishCommand({ deviceId, type: 'request', action: 'status', value: null })
+      return res.status(200).json({ cmdId, status: 'sent' })
+    } catch (e) {
+      console.error('publishCommand failed', e)
+      return res.status(500).json({ error: e?.message || String(e) })
+    }
+  } catch (err) {
+    console.error('POST /api/devices/:deviceId/request_status error', err)
     return res.status(500).json({ error: err?.message || String(err) })
   }
 })
