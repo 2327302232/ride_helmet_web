@@ -146,6 +146,33 @@ router.get('/api/devices/:deviceId/request_status/:cmdId/result', async (req, re
   }
 })
 
+// GET /api/devices/:deviceId/commands?type=...&action=...&limit=10
+router.get('/api/devices/:deviceId/commands', async (req, res) => {
+  try {
+    const { deviceId } = req.params
+    const { type, action, limit } = req.query || {}
+    const lim = limit ? Number(limit) : 10
+    let sql = 'SELECT id, cmd_id AS cmdId, device_id AS deviceId, ts, type, action, value_json AS valueJson, status, sent_ts AS sentTs, ack_ts AS ackTs, ack_payload AS ackPayload, last_error AS lastError FROM device_commands WHERE device_id = ?'
+    const params = [deviceId]
+    if (type) { sql += ' AND type = ?'; params.push(String(type)) }
+    if (action) { sql += ' AND action = ?'; params.push(String(action)) }
+    sql += ' ORDER BY ts DESC LIMIT ?'; params.push(Number(lim))
+    const stmt = db.prepare(sql)
+    const rows = stmt.all(...params)
+    // try to parse ackPayload JSON where possible
+    const parsed = rows.map(r => {
+      const copy = Object.assign({}, r)
+      try { copy.ackPayload = copy.ackPayload ? JSON.parse(copy.ackPayload) : null } catch (e) { /* leave as raw */ }
+      try { copy.valueJson = copy.valueJson ? JSON.parse(copy.valueJson) : null } catch (e) { /* ignore */ }
+      return copy
+    })
+    return res.json({ commands: parsed })
+  } catch (err) {
+    console.error('GET /api/devices/:deviceId/commands error', err)
+    return res.status(500).json({ error: err?.message || String(err) })
+  }
+})
+
 // POST /api/devices
 router.post('/api/devices', async (req, res) => {
   try {

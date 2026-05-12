@@ -13,6 +13,10 @@
             <span class="device-dot"></span>
             <span class="status-text">{{ statusLabel }}</span>
           </div>
+          <div class="status-basis" v-if="commandBasis">
+            <div style="font-size:12px;color:#666;margin-top:6px;">判定依据（近期下发命令 device_commands，按 deviceId/type=request 过滤）：</div>
+            <pre style="max-height:140px;overflow:auto;background:#f7fbff;border:1px solid #e6f0fb;padding:8px;border-radius:6px;margin-top:6px;font-size:12px">{{ JSON.stringify(commandBasis, null, 2) }}</pre>
+          </div>
         </div>
 
         <div class="header-right">
@@ -36,6 +40,7 @@ const devicesList = ref([])
 const loading = ref(false)
 const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
+const commandBasis = ref(null)
 
 const statusLabel = computed(() => {
   switch (simStatus.value) {
@@ -68,6 +73,9 @@ async function loadDeviceOnlineFromServer(devId) {
     // ignore and fallback to local heuristic
   }
 
+  // 同时加载 device_commands 作为判定依据（仅展示，不改变判定流程）
+  try { loadCommandBasis(devId).catch(() => {}) } catch (e) {}
+
   // 后端不可用时退回到设备对象内的 online 字段或确定性模拟
   const found = devicesList.value.find(d => String(d.deviceId || d.device_id) === String(devId))
   if (found && found.online !== undefined) { simStatus.value = found.online ? 'online' : 'offline'; return }
@@ -79,6 +87,22 @@ async function loadDeviceOnlineFromServer(devId) {
     return
   }
   simStatus.value = 'unknown'
+}
+
+async function loadCommandBasis(devId) {
+  commandBasis.value = null
+  if (!devId) return
+  try {
+    const url = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(devId)}/commands?type=request&action=status&limit=5`
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json().catch(() => null)
+    if (data && Array.isArray(data.commands)) {
+      commandBasis.value = data.commands
+    }
+  } catch (e) {
+    // ignore
+  }
 }
 
 watch(deviceId, (v) => { loadDeviceOnlineFromServer(v).catch(() => {}) })
@@ -178,7 +202,9 @@ async function onRefresh() {
     } catch (e) {
       console.warn('request_status error', e)
     }
-  } finally {
+      // 更新判定依据显示
+      try { await loadCommandBasis(deviceId.value) } catch (e) {}
+    } finally {
     loading.value = false
   }
 }
