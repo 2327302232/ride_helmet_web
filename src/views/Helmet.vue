@@ -115,7 +115,7 @@ function handleWsMessage(msg) {
   }
 }
 
-function waitForCmdReply(cmdId, timeout = 10000) {
+function waitForCmdReply(cmdId, timeout = 3000) {
   return new Promise((resolve, reject) => {
     if (!cmdId) return reject(new Error('no cmdId'))
     const timer = setTimeout(() => {
@@ -133,7 +133,7 @@ const statusLabel = computed(() => {
   switch (simStatus.value) {
     case 'online': return '在线'
     case 'offline': return '离线'
-    case 'pending': return '请求中'
+    case 'pending': return '连接中'
     case 'all': return '全部'
     default: return '未知'
   }
@@ -250,9 +250,11 @@ async function onRefresh() {
         if (cmdId) {
           // 使用 WebSocket 等待设备对本次 cmdId 的回复（ack 或 status），优先使用回复决定在线状态
           try {
+            // 在等待期间显示连接中
+            simStatus.value = 'pending'
             ensureSocket()
             subscribeDevice(deviceId.value)
-            const reply = await waitForCmdReply(cmdId, 10000).catch(() => null)
+            const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
             if (reply) {
               // reply 可能来自 cmd_ack 或 status
               if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {
