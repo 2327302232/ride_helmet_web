@@ -1,20 +1,176 @@
 <template>
-  <div class="panel-view" style="padding:16px;">
-    
-    <p>占位：这是 /helmet 路由的占位页面。后续可放 Helmet 相关控制页。</p>
-    
+  <div class="panel-view">
+    <div class="log-header">
+      <div class="log-header-inner">
+        <div class="header-left"></div>
+
+        <div class="filter-center" title="选择设备">
+          <span class="filter-text">设备：</span>
+          <select v-model="deviceId" class="log-select">
+            <option v-for="(d, i) in devicesList" :key="d.deviceId || d.device_id || i" :value="d.deviceId || d.device_id">{{ (d.deviceId || d.device_id) + (d.name ? ' — ' + d.name : '') }}</option>
+          </select>
+          <div class="device-status" :class="['status-' + simStatus]">
+            <span class="device-dot"></span>
+            <span class="status-text">{{ statusLabel }}</span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button class="log-btn log-btn-small" :disabled="loading" @click="onRefresh">刷新</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding:16px;"></div>
   </div>
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, ref, watch, computed } from 'vue'
+
 onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
+
+const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
+const deviceId = ref('all')
+const devicesList = ref([])
+const loading = ref(false)
+const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
+const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
+
+const statusLabel = computed(() => {
+  switch (simStatus.value) {
+    case 'online': return '在线'
+    case 'offline': return '离线'
+    case 'all': return '全部'
+    default: return '未知'
+  }
+})
+
+watch([deviceId, devicesList], () => {
+  if (deviceId.value === 'all') { simStatus.value = 'all'; return }
+  const found = devicesList.value.find(d => String(d.deviceId || d.device_id) === String(deviceId.value))
+  if (found && found.online !== undefined) {
+    simStatus.value = found.online ? 'online' : 'offline'
+  } else if (found) {
+    const idStr = String(deviceId.value || '')
+    let sum = 0
+    for (let i = 0; i < idStr.length; i++) sum += idStr.charCodeAt(i)
+    simStatus.value = (sum % 2 === 0) ? 'online' : 'offline'
+  } else {
+    simStatus.value = 'unknown'
+  }
+})
+
+async function loadDevicesList() {
+  try {
+      const url = `${backendBase.replace(/\/$/, '')}/api/devices`
+      const res = await fetch(url)
+      if (!res.ok) { devicesList.value = []; return }
+      const data = await res.json().catch(() => null)
+      const all = Array.isArray(data?.devices) ? data.devices : []
+      // 仅显示当前登录用户的设备（与 Log 页行为一致）
+      if (user.value && user.value.id != null) {
+        devicesList.value = all.filter(d => {
+          const uid = d.userId !== undefined ? d.userId : (d.user_id !== undefined ? d.user_id : null)
+          return uid != null && String(uid) === String(user.value.id)
+        })
+        // 如果当前选择不在列表里，默认选第一个设备（去掉“全部”选项后适配）
+        if (devicesList.value.length > 0) {
+          const exists = devicesList.value.some(d => String(d.deviceId || d.device_id) === String(deviceId.value))
+          if (!exists) deviceId.value = devicesList.value[0].deviceId || devicesList.value[0].device_id
+        } else {
+          deviceId.value = null
+        }
+      } else {
+        devicesList.value = []
+        deviceId.value = null
+      }
+  } catch (e) {
+    console.warn('loadDevicesList failed', e)
+    devicesList.value = []
+  }
+}
+
+async function onRefresh() {
+  loading.value = true
+  try {
+    await loadDevicesList()
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => { loadDevicesList().catch(() => {}) })
 </script>
 
 <style scoped>
 .panel-view {
+  --left-col: 34px;
   max-width: 900px;
-  margin: 0 auto;
-  color: #222;
+  margin: 72px auto 0;
+  color: #111;
+  background: #fff;
+  border-radius: 0;
+  box-shadow: none;
+  padding-bottom: 40px;
+  font-size: 15px;
 }
+
+.log-header {
+  position: relative;
+  margin-bottom: 12px;
+}
+.log-header-inner {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 0px;
+  min-height: 30px;
+  width: min(900px, calc(100% - 36px));
+  z-index: 1001;
+  border-bottom: 1px solid #eef3f9;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(33,150,243,0.03);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.header-left { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: var(--left-col); height: 24px }
+.filter-center { display:flex; align-items:center; gap:8px }
+.filter-text { font-weight: 800; color: #1976d2; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.header-right { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display:flex; align-items:center; gap:8px }
+
+/* Buttons — same visual style as Log page */
+.log-btn {
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(33,150,243,0.08);
+  transition: background 0.2s;
+}
+.log-btn:hover { background: #1976d2 }
+.log-btn:disabled { opacity: 0.7; cursor: default }
+.log-btn-small { padding: 6px 10px; font-size: 14px; border-radius: 6px }
+.log-select { margin-left: 3px; padding: 7px 10px; border: 1px solid #bcdffb; border-radius: 7px; font-size: 15px; outline: none; background: #fff; color: #222 }
+.log-select:focus { border-color: #2196f3 }
+/* 固定筛选框宽度，与 Log 页 filter-panel 中选择器一致 */
+.filter-center .log-select { width: 150px; max-width: 200px }
+/* 设备在线状态样式 */
+.device-status { display:flex; align-items:center; gap:8px; margin-left:8px }
+.device-dot { width:10px; height:10px; border-radius:50% }
+.status-online .device-dot { background: #4caf50 }
+.status-offline .device-dot { background: #f44336 }
+.status-unknown .device-dot { background: #9e9e9e }
+.status-all .device-dot { background: #1976d2 }
+.status-text { font-size: 14px; font-weight: 700; white-space: nowrap }
+.status-online .status-text { color:#4caf50 }
+.status-offline .status-text { color:#f44336 }
+.status-unknown .status-text { color:#9e9e9e }
+.status-all .status-text { color:#1976d2 }
 </style>

@@ -316,7 +316,7 @@ async function deleteDevice(d, opts = {}) {
   padding: 24px 18px 40px 18px;
   font-size: 15px;
 }
-.me-header h2 {display: flex; margin: 0 0 12px 0; justify-content: center; }
+.me-header h2 {display: flex; margin: 0 0 12px 0; justify-content: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .auth-tabs { display:flex; gap:8px; margin-bottom:12px; justify-content:center; align-items:center }
 .auth-tabs button { padding:8px 12px; border-radius:8px; border:1px solid #bcdffb; background:#fff }
 .auth-tabs button.active { background:#2196f3; color:#fff; border-color:#1976d2 }

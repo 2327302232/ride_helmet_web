@@ -560,6 +560,24 @@ watch([() => selectionStore.selected.slice(), () => filteredSegments.value.lengt
 .log-select:focus {
   border-color: #2196f3;
 }
+
+/* 标题与提示类文本不换行，超出用省略号显示 */
+.filter-text,
+.log-label,
+.log-seg-device,
+.log-seg-count {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-seg-title > strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .log-btn {
   background: #2196f3;
   color: #fff;
