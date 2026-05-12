@@ -42,6 +42,17 @@ const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
 const commandBasis = ref(null)
 
+// Display state logic (前端判定说明):
+// - 当用户点击“刷新”并成功下发命令（后端返回 cmdId）时，立即进入 `pending`（显示“连接中”），并等待设备回复。
+// - 在等待期内若收到设备的 `ack` 或 `status` 并且表明在线，则设为 `online`（显示“在线”）；若表明离线，则设为 `offline`（显示“离线”）。
+// - 若等待期超时（默认 3 秒）且未收到匹配回复，则视为 `offline`（显示“离线”）。
+// - 如果未下发命令（或后端未返回 cmdId），则回退到后端持久化的 `device_status_current` 或历史 `status` 记录来决定（可能为 `online`/`offline`/`unknown`）。
+// - commandBasis（device_commands）仅作为“判定依据”展示，其最新一条记录的 status 用于快速预览：
+//     - 'acked' => online
+//     - 'failed'|'expired' => offline
+//     - 'sent'|'queued' => pending
+//     - 其它 => unknown
+
 // WebSocket for realtime reply delivery
 const ws = ref(null)
 const wsConnected = ref(false)
@@ -115,7 +126,7 @@ function handleWsMessage(msg) {
   }
 }
 
-function waitForCmdReply(cmdId, timeout = 5000) {
+function waitForCmdReply(cmdId, timeout = 3000) {
   return new Promise((resolve, reject) => {
     if (!cmdId) return reject(new Error('no cmdId'))
     const timer = setTimeout(() => {
@@ -251,10 +262,11 @@ async function onRefresh() {
           // 使用 WebSocket 等待设备对本次 cmdId 的回复（ack 或 status），优先使用回复决定在线状态
           try {
             // 在等待期间显示连接中
+            // 进入连接中状态，等待设备在指定超时内回复
             simStatus.value = 'pending'
             ensureSocket()
             subscribeDevice(deviceId.value)
-            const reply = await waitForCmdReply(cmdId, 5000).catch(() => null)
+            const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
             if (reply) {
               // reply 可能来自 cmd_ack 或 status
               if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {
@@ -264,11 +276,12 @@ async function onRefresh() {
               } else if (reply.status === 'acked' || (reply.payload && reply.payload.status === 'acked')) {
                 simStatus.value = 'online'
               } else {
-                // 无法判定则回退到后端持久化状态
+                // 无法明确判定，回退到后端持久化状态
                 await loadDeviceOnlineFromServer(deviceId.value)
               }
             } else {
-              await loadDeviceOnlineFromServer(deviceId.value)
+              // 超时未收到设备回复 -> 明确视为离线（避免与“连接中”状态混淆）
+              simStatus.value = 'offline'
             }
           } catch (e) {
             await loadDeviceOnlineFromServer(deviceId.value)
