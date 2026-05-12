@@ -55,9 +55,13 @@ async function loadDeviceOnlineFromServer(devId) {
     if (!res.ok) { throw new Error('fetch failed') }
     const data = await res.json().catch(() => null)
     if (data && Object.prototype.hasOwnProperty.call(data, 'online')) {
-      if (data.online === true) simStatus.value = 'online'
-      else if (data.online === false) simStatus.value = 'offline'
-      else simStatus.value = 'unknown'
+      const on = data.online
+      if (on === true || on === 1 || on === '1' || on === 'true') simStatus.value = 'online'
+      else if (on === false || on === 0 || on === '0' || on === 'false') simStatus.value = 'offline'
+      else {
+        // best-effort fallback: treat truthy as online
+        try { simStatus.value = on ? 'online' : 'offline' } catch (e) { simStatus.value = 'unknown' }
+      }
       return
     }
   } catch (e) {

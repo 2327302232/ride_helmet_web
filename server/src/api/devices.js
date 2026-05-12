@@ -1,5 +1,5 @@
 import express from 'express'
-import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline } from '../db.js'
+import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline, getLatestStatus } from '../db.js'
 import { publishCommand } from '../mqtt.js'
 
 const router = express.Router()
@@ -37,8 +37,33 @@ router.get('/api/devices/:deviceId/online', async (req, res) => {
   try {
     const { deviceId } = req.params
     const row = getDeviceOnline(deviceId)
-    if (!row) return res.json({ deviceId, online: null, ts: null })
-    return res.json({ deviceId: row.deviceId, online: !!row.online, ts: row.ts, rawJson: row.rawJson, updatedAt: row.updatedAt })
+    if (row) {
+      return res.json({ deviceId: row.deviceId, online: !!row.online, ts: row.ts, rawJson: row.rawJson, updatedAt: row.updatedAt })
+    }
+
+    // fallback: if no current online record, try latest status table entry
+    try {
+      const latest = getLatestStatus(deviceId)
+      if (latest) {
+        let onlineVal = null
+        if (latest.raw_json) {
+          try {
+            const parsed = JSON.parse(latest.raw_json)
+            if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'online')) {
+              onlineVal = parsed.online === true || parsed.online === 'true' || parsed.online === 1 || parsed.online === '1'
+            }
+          } catch (e) {
+            // ignore parse errors
+          }
+        }
+        console.log(`[HTTP] GET /api/devices/${deviceId}/online fallback -> latest status ts=${latest.ts} online=${onlineVal}`)
+        return res.json({ deviceId, online: onlineVal, ts: latest.ts, status: latest.status, message: latest.message, rawJson: latest.raw_json })
+      }
+    } catch (e) {
+      console.warn('Fallback getLatestStatus failed', e && e.message ? e.message : e)
+    }
+
+    return res.json({ deviceId, online: null, ts: null })
   } catch (err) {
     console.error('GET /api/devices/:deviceId/online error', err)
     return res.status(500).json({ error: err?.message || String(err) })
