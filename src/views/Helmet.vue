@@ -99,6 +99,13 @@ async function loadCommandBasis(devId) {
     const data = await res.json().catch(() => null)
     if (data && Array.isArray(data.commands)) {
       commandBasis.value = data.commands
+      // 使用 device_commands 表的最新一条记录的 status 字段来判定在线（按用户要求）
+      if (commandBasis.value.length > 0) {
+        const latest = commandBasis.value[0]
+        const s = latest.status
+        if (s === 'acked') simStatus.value = 'online'
+        else simStatus.value = 'offline'
+      }
     }
   } catch (e) {
     // ignore
