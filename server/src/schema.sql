@@ -67,6 +67,17 @@ CREATE TABLE IF NOT EXISTS device_status_current (
 
 CREATE INDEX IF NOT EXISTS idx_device_status_current_device ON device_status_current(device_id);
 
+-- Pending requests per-device: 在用户刷新并下发 request_status 时，记录期望的 cmdId，
+-- 只有设备针对该 cmdId 的回复才会被视为本次刷新对应的答复。
+CREATE TABLE IF NOT EXISTS device_pending_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL UNIQUE,
+  cmd_id TEXT NOT NULL UNIQUE,
+  created_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_pending_requests_device ON device_pending_requests(device_id);
+
 -- Devices table: 存放设备元信息（安全使用 IF NOT EXISTS）
 CREATE TABLE IF NOT EXISTS devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

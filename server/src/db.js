@@ -65,6 +65,16 @@ function prepareStatements() {
 
   stmts.getDeviceStatusCurrent = db.prepare(`SELECT device_id AS deviceId, online, ts, raw_json AS rawJson, updated_at AS updatedAt FROM device_status_current WHERE device_id = @device_id`);
 
+  // pending requests: track latest pending cmdId for a device (one refresh -> one cmdId)
+  stmts.insertPendingRequest = db.prepare(`INSERT INTO device_pending_requests (device_id, cmd_id, created_at)
+    VALUES (@device_id, @cmd_id, @created_at)
+    ON CONFLICT(device_id) DO UPDATE SET cmd_id = @cmd_id, created_at = @created_at`);
+
+  stmts.getPendingByDevice = db.prepare(`SELECT device_id AS deviceId, cmd_id AS cmdId, created_at FROM device_pending_requests WHERE device_id = @device_id`);
+  stmts.getPendingByCmd = db.prepare(`SELECT device_id AS deviceId, cmd_id AS cmdId, created_at FROM device_pending_requests WHERE cmd_id = @cmd_id`);
+  stmts.deletePendingByCmd = db.prepare(`DELETE FROM device_pending_requests WHERE cmd_id = @cmd_id`);
+  stmts.deletePendingByDevice = db.prepare(`DELETE FROM device_pending_requests WHERE device_id = @device_id`);
+
   // devices / device_sequences statements
   stmts.insertDevice = db.prepare(`INSERT INTO devices (device_id, serial, name, user_id, metadata, created_at)
     VALUES (@device_id, @serial, @name, @user_id, @metadata, @created_at)`);
@@ -294,6 +304,45 @@ export function getLatestStatus(deviceId) {
   if (!deviceId) throw new Error('deviceId is required.');
   const row = stmts.getLatestStatus.get({ device_id: String(deviceId) });
   return row || null;
+}
+
+/**
+ * Add or update a pending request for a device (one refresh -> one cmdId).
+ */
+export function addPendingRequest({ deviceId, cmdId, createdAt = null } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId || !cmdId) throw new Error('deviceId and cmdId are required.');
+  const now = createdAt == null ? Date.now() : Number(createdAt);
+  const info = stmts.insertPendingRequest.run({ device_id: String(deviceId), cmd_id: String(cmdId), created_at: now });
+  return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+export function getPendingRequestByDevice(deviceId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  const row = stmts.getPendingByDevice.get({ device_id: String(deviceId) });
+  return row || null;
+}
+
+export function getPendingRequestByCmd(cmdId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!cmdId) throw new Error('cmdId is required.');
+  const row = stmts.getPendingByCmd.get({ cmd_id: String(cmdId) });
+  return row || null;
+}
+
+export function deletePendingRequestByCmd(cmdId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!cmdId) throw new Error('cmdId is required.');
+  const info = stmts.deletePendingByCmd.run({ cmd_id: String(cmdId) });
+  return { changes: info.changes };
+}
+
+export function deletePendingRequestByDevice(deviceId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  const info = stmts.deletePendingByDevice.run({ device_id: String(deviceId) });
+  return { changes: info.changes };
 }
 
 /**

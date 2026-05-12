@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline } from './db.js';
+import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -204,6 +204,25 @@ async function handleAck(deviceId, payloadObj, topic) {
   }
 
   emitter.emit('cmd_ack', { deviceId, cmdId, ok, message: payloadObj.message, ts: ackTs, raw: payloadObj });
+
+  // 如果该 cmdId 对应当前 pending 请求，则把它视为本次刷新/请求的回复并更新 device_status_current
+  try {
+    const pending = getPendingRequestByCmd(cmdId);
+    if (pending && String(pending.deviceId) === String(deviceId)) {
+      try {
+        setDeviceOnline({ deviceId, online: !!ok, ts: ackTs, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
+      } catch (e) {
+        emitter.emit('error', { error: e, context: { where: 'setDeviceOnline after ack', cmdId, deviceId } });
+      }
+      try {
+        deletePendingRequestByCmd(cmdId);
+      } catch (e) {
+        // ignore
+      }
+    }
+  } catch (e) {
+    // ignore pending lookup errors
+  }
 }
 
 async function handleStatus(deviceId, payloadObj, topic) {
@@ -223,13 +242,31 @@ async function handleStatus(deviceId, payloadObj, topic) {
     emitter.emit('error', { error: e, context: { deviceId } });
   }
 
-  // 如果包含 online 字段，则写入 device_status_current（用于快速查询在线/离线）
+  // 如果包含 online 字段，则根据是否存在 pending 请求决定是否更新 device_status_current：
+  // - 若存在 pending（用户刚刷新并下发 request），只有当该 status payload 包含 cmdId 并与 pending.cmdId 匹配时，才将其视为本次请求的回复并更新 current state；
+  // - 若不存在 pending，则按原逻辑更新 current state。
   try {
     if (payloadObj.online !== undefined) {
-      try {
-        setDeviceOnline({ deviceId, online: online, ts, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
-      } catch (e) {
-        emitter.emit('error', { error: e, context: { where: 'setDeviceOnline', deviceId } });
+      const pending = getPendingRequestByDevice(deviceId);
+      if (pending) {
+        // 若 payload 中包含 cmdId，则匹配并处理；否则忽略对 device_status_current 的更新（只保留历史 status 记录）
+        const payloadCmd = payloadObj.cmdId || payloadObj.cmd_id || null;
+        if (payloadCmd && String(payloadCmd) === String(pending.cmdId)) {
+          try {
+            setDeviceOnline({ deviceId, online: online, ts, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
+          } catch (e) {
+            emitter.emit('error', { error: e, context: { where: 'setDeviceOnline from status', deviceId } });
+          }
+          try { deletePendingRequestByCmd(pending.cmdId); } catch (e) {}
+        } else {
+          // ignore updating current device_status while waiting for matching reply
+        }
+      } else {
+        try {
+          setDeviceOnline({ deviceId, online: online, ts, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
+        } catch (e) {
+          emitter.emit('error', { error: e, context: { where: 'setDeviceOnline', deviceId } });
+        }
       }
     }
   } catch (e) {

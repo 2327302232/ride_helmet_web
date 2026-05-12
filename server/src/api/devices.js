@@ -1,5 +1,5 @@
 import express from 'express'
-import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline, getLatestStatus, db } from '../db.js'
+import { addDevice, getDevice, listRegisteredDevices, updateDevice, removeDevice, getDeviceOnline, getLatestStatus, db, addPendingRequest, deletePendingRequestByCmd, setDeviceOnline } from '../db.js'
 import { publishCommand } from '../mqtt.js'
 
 const router = express.Router()
@@ -77,6 +77,17 @@ router.post('/api/devices/:deviceId/request_status', async (req, res) => {
     // 下发命令，设备应回复到 /ack 或 /status
     try {
       const cmdId = await publishCommand({ deviceId, type: 'request', action: 'status', value: null })
+      // 记录本次 pending 请求，并临时将设备置为离线（以本次回复为准）
+      try {
+        addPendingRequest({ deviceId, cmdId, createdAt: Date.now() })
+        try {
+          setDeviceOnline({ deviceId, online: false, ts: Date.now(), rawJson: JSON.stringify({ pendingCmdId: cmdId }), updatedAt: Date.now() })
+        } catch (e) {
+          console.warn('[HTTP] setDeviceOnline failed after request_status', e && e.message ? e.message : e)
+        }
+      } catch (e) {
+        console.warn('[HTTP] addPendingRequest failed', e && e.message ? e.message : e)
+      }
       return res.status(200).json({ cmdId, status: 'sent' })
     } catch (e) {
       console.error('publishCommand failed', e)
