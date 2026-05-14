@@ -13,10 +13,7 @@
             <span class="device-dot"></span>
             <span class="status-text">{{ statusLabel }}</span>
           </div>
-          <div class="status-basis" v-if="commandBasis">
-            <div style="font-size:12px;color:#666;margin-top:6px;">判定依据（近期下发命令 device_commands，按 deviceId/type=request 过滤）：</div>
-            <pre style="max-height:140px;overflow:auto;background:#f7fbff;border:1px solid #e6f0fb;padding:8px;border-radius:6px;margin-top:6px;font-size:12px">{{ JSON.stringify(commandBasis, null, 2) }}</pre>
-          </div>
+          <!-- 判定依据面板已移除，改为在主显示区显示 Raw_Log -->
         </div>
 
         <div class="header-right">
@@ -25,7 +22,12 @@
       </div>
     </div>
 
-    <div style="padding:16px;"></div>
+    <div style="padding:16px;">
+      <div class="raw-log-panel">
+        <div style="font-size:14px;font-weight:700;margin-bottom:8px;">Raw_Log（页面接收到的数据）</div>
+        <pre style="max-height:480px;overflow:auto;background:#fff;border:1px solid #e8e8e8;padding:12px;border-radius:6px;font-size:12px">{{ JSON.stringify(rawLog, null, 2) }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -57,6 +59,19 @@ const commandBasis = ref(null)
 const ws = ref(null)
 const wsConnected = ref(false)
 const pendingResolvers = new Map() // cmdId -> resolver
+
+// Raw log: 存放页面接收到的原始数据（WS 消息、API 请求/回复等）
+const rawLog = ref([])
+function appendRawLog(entry) {
+  try {
+    const rec = { ts: Date.now(), entry }
+    rawLog.value.unshift(rec)
+    // 限制长度以防内存无限增长
+    if (rawLog.value.length > 300) rawLog.value.length = 300
+  } catch (e) {
+    // ignore
+  }
+}
 
 function getWsUrl(base) {
   let url = (base || '').replace(/\/$/, '')
@@ -100,6 +115,8 @@ function subscribeDevice(devId) {
 }
 
 function handleWsMessage(msg) {
+  // 记录所有接收到的 WS 消息到 Raw_Log
+  try { appendRawLog({ source: 'ws', data: msg }) } catch (e) {}
   if (!msg || !msg.type) return
   if (msg.type === 'cmd_ack') {
     const p = msg.payload
@@ -197,7 +214,9 @@ async function loadCommandBasis(devId) {
     if (!res.ok) return
     const data = await res.json().catch(() => null)
     if (data && Array.isArray(data.commands)) {
-      commandBasis.value = data.commands
+        commandBasis.value = data.commands
+        // 记录从后端读取到的 commandBasis
+        try { appendRawLog({ source: 'commands_fetch', deviceId: devId, data: data.commands }) } catch (e) {}
       // 使用 device_commands 表的最新一条记录的 status 字段来判定在线（按用户要求）
       if (commandBasis.value.length > 0) {
         const latest = commandBasis.value[0]
@@ -258,6 +277,7 @@ async function onRefresh() {
         const postRes = await fetch(reqUrl, { method: 'POST' }).catch(() => null)
         const postData = postRes && postRes.ok ? await postRes.json().catch(() => null) : null
         const cmdId = postData && postData.cmdId ? postData.cmdId : null
+        try { appendRawLog({ source: 'request_post', deviceId: deviceId.value, data: postData }) } catch (e) {}
         if (cmdId) {
           // 使用 WebSocket 等待设备对本次 cmdId 的回复（ack 或 status），优先使用回复决定在线状态
           try {
@@ -267,6 +287,7 @@ async function onRefresh() {
             ensureSocket()
             subscribeDevice(deviceId.value)
             const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
+            try { appendRawLog({ source: 'reply_wait', deviceId: deviceId.value, cmdId, data: reply }) } catch (e) {}
             if (reply) {
               // reply 可能来自 cmd_ack 或 status
               if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {

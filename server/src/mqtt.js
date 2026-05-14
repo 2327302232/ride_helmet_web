@@ -50,7 +50,7 @@ const {
   MQTT_CA_PATH,
   MQTT_QOS_TELEMETRY = '0',
   MQTT_QOS_CMD = '1',
-  COMMAND_ACK_TIMEOUT_MS = '8000',
+  COMMAND_ACK_TIMEOUT_MS = '3000',
   RECONNECT_PERIOD_MS = '2000'
 } = process.env;
 
@@ -58,7 +58,7 @@ const DEFAULT_CLIENT_ID = MQTT_CLIENT_ID || `ride-helmet-server-${Date.now()}`;
 const rejectUnauthorized = String(MQTT_REJECT_UNAUTHORIZED).toLowerCase() !== 'false';
 const qosTelemetry = Number.isFinite(Number(MQTT_QOS_TELEMETRY)) ? Number(MQTT_QOS_TELEMETRY) : 0;
 const qosCmd = Number.isFinite(Number(MQTT_QOS_CMD)) ? Number(MQTT_QOS_CMD) : 1;
-const ackTimeoutMs = Number.isFinite(Number(COMMAND_ACK_TIMEOUT_MS)) ? Number(COMMAND_ACK_TIMEOUT_MS) : 8000;
+const ackTimeoutMs = Number.isFinite(Number(COMMAND_ACK_TIMEOUT_MS)) ? Number(COMMAND_ACK_TIMEOUT_MS) : 3000;
 const reconnectPeriodMs = Number.isFinite(Number(RECONNECT_PERIOD_MS)) ? Number(RECONNECT_PERIOD_MS) : 2000;
 
 let caBuffer = null;
@@ -469,7 +469,11 @@ export function publishCommand({ deviceId, cmdId = null, type, action, value } =
     const payload = { deviceId, cmdId: finalCmdId, type, action, value, ts };
     const topic = `${MQTT_TOPIC_PREFIX}/${deviceId}/cmd`;
 
-    client.publish(topic, JSON.stringify(payload), { qos: qosCmd }, (err) => {
+    // 默认使用 qosCmd，但针对 request/status（刷新设备状态请求）使用 QoS 0
+    const pubOpts = { qos: qosCmd };
+    if (type === 'request' && action === 'status') pubOpts.qos = 0;
+
+    client.publish(topic, JSON.stringify(payload), pubOpts, (err) => {
       if (err) {
         try { updateCommandStatus({ cmdId: finalCmdId, status: 'failed', lastError: err && err.message ? err.message : String(err) }); } catch (e) {}
         return reject(err);
