@@ -1,28 +1,41 @@
 <template>
   <div class="panel-view">
     <div class="log-header">
-      <div class="log-header-inner">
-        <div class="header-left"></div>
-
-        <div class="filter-center" title="选择设备">
-          <span class="filter-text">设备：</span>
-          <select v-model="deviceId" class="log-select">
-            <option v-for="(d, i) in devicesList" :key="d.deviceId || d.device_id || i" :value="d.deviceId || d.device_id">{{ (d.deviceId || d.device_id) + (d.name ? ' — ' + d.name : '') }}</option>
-          </select>
-          <div class="device-status" :class="['status-' + simStatus]">
-            <span class="device-dot"></span>
-            <span class="status-text">{{ statusLabel }}</span>
+        <h2>
+          <div class="header-left-group" ref="deviceSelectRef">
+            <div class="device-select" @click.stop="toggleDevices" role="button" tabindex="0">
+              <span class="device-select-label">{{ selectedDeviceLabel }}</span>
+              <span class="caret">▾</span>
+            </div>
+            <ul v-if="showDeviceDropdown" class="device-dropdown">
+              <li v-for="(d, i) in devicesList" :key="d.deviceId || d.device_id || i" @click.stop="selectDevice(d)" :class="{active: String(deviceId) === String(d.deviceId || d.device_id)}">{{ (d.deviceId || d.device_id) + (d.name ? ' — ' + d.name : '') }}</li>
+            </ul>
+            <div class="device-status" :class="['status-' + simStatus]">
+              <span class="device-dot"></span>
+              <span class="status-text">{{ statusLabel }}</span>
+            </div>
           </div>
-          <!-- 判定依据面板已移除，改为在主显示区显示 Raw_Log -->
-        </div>
-
-        <div class="header-right">
-          <button class="log-btn log-btn-small" :disabled="loading" @click="onRefresh">刷新</button>
-        </div>
-      </div>
-    </div>
+          <button class="log-btn" :disabled="loading" @click="onRefresh">刷新</button>
+            </h2>
+          </div>
 
     <div style="padding:16px;">
+      <div class="status-bar">
+        <div class="status-left">
+          <img :src="batteryIcon" alt="battery" class="status-icon" />
+          <div class="battery-text">{{ batteryLevel }}%</div>
+        </div>
+      </div>
+      <div class="power-save-panel">
+        <div class="ps-left">
+          <span class="ps-label">省电模式</span>
+          <span class="ps-desc">{{ powerSave ? '已启用' : '未启用' }}</span>
+        </div>
+        <label class="ps-switch">
+          <input type="checkbox" v-model="powerSave" />
+          <span class="ps-slider"></span>
+        </label>
+      </div>
       <div class="raw-log-panel">
         <div style="font-size:14px;font-weight:700;margin-bottom:8px;">Raw_Log（页面接收到的数据）</div>
         <pre style="max-height:480px;overflow:auto;background:#fff;border:1px solid #e8e8e8;padding:12px;border-radius:6px;font-size:12px">{{ JSON.stringify(rawLog, null, 2) }}</pre>
@@ -34,6 +47,11 @@
 <script setup>
 import { onMounted, ref, watch, computed, onUnmounted } from 'vue'
 
+import batteryWorking from '../assets/battery-working.svg'
+import batteryEmpty from '../assets/battery-empty.svg'
+import batteryCharge from '../assets/battery-charge.svg'
+import batteryFull from '../assets/battery-full.svg'
+
 onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
@@ -43,6 +61,46 @@ const loading = ref(false)
 const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
 const commandBasis = ref(null)
+const powerSave = ref(false)
+const showDeviceDropdown = ref(false)
+const deviceSelectRef = ref(null)
+const batteryLevel = ref(78)
+const charging = ref(false)
+const batteryIcon = computed(() => {
+  try {
+    const lvl = Number(batteryLevel.value)
+    const v = Number.isFinite(lvl) ? Math.max(0, Math.min(100, Math.round(lvl))) : 0
+    // charging has priority
+    if (charging.value) return batteryCharge
+    // mapping: 0-10 -> empty, 11-80 -> working, 81-100 -> full
+    if (v <= 10) return batteryEmpty
+    if (v <= 80) return batteryWorking
+    return batteryFull
+  } catch (e) { return batteryWorking }
+})
+const selectedDeviceLabel = computed(() => {
+  const found = devicesList.value.find(d => String(d.deviceId || d.device_id) === String(deviceId.value))
+  if (found) return (found.deviceId || found.device_id) + (found.name ? ' — ' + found.name : '')
+  if (devicesList.value.length > 0) return '选择设备'
+  return '无设备'
+})
+
+function toggleDevices() {
+  if (!devicesList.value || devicesList.value.length === 0) return
+  showDeviceDropdown.value = !showDeviceDropdown.value
+}
+
+function selectDevice(d) {
+  deviceId.value = d.deviceId || d.device_id
+  showDeviceDropdown.value = false
+}
+
+function onDocClick(ev) {
+  try {
+    if (!deviceSelectRef.value) return
+    if (!deviceSelectRef.value.contains(ev.target)) showDeviceDropdown.value = false
+  } catch (e) {}
+}
 
 // Display state logic (前端判定说明):
 // - 当用户点击“刷新”并成功下发命令（后端返回 cmdId）时，立即进入 `pending`（显示“连接中”），并等待设备回复。
@@ -233,6 +291,7 @@ async function loadCommandBasis(devId) {
 }
 
 watch(deviceId, (v) => { loadDeviceOnlineFromServer(v).catch(() => {}) })
+watch(powerSave, (v) => { try { localStorage.setItem('ride_power_save', JSON.stringify(!!v)) } catch (e) {} })
 
 async function loadDevicesList() {
   try {
@@ -322,50 +381,45 @@ async function onRefresh() {
   }
 }
 
-onMounted(() => { loadDevicesList().catch(() => {}) })
+onMounted(() => {
+  loadDevicesList().catch(() => {})
+  try { powerSave.value = JSON.parse(localStorage.getItem('ride_power_save') || 'false') } catch (e) { powerSave.value = false }
+  try { const b = JSON.parse(localStorage.getItem('ride_battery') || 'null'); if (b != null) batteryLevel.value = Number(b) } catch (e) {}
+  try { document.addEventListener('click', onDocClick) } catch (e) {}
+})
 onUnmounted(() => {
   try { if (ws.value) ws.value.close() } catch (e) {}
+  try { document.removeEventListener('click', onDocClick) } catch (e) {}
 })
 </script>
 
 <style scoped>
 .panel-view {
   --left-col: 34px;
-  max-width: 900px;
-  margin: 72px auto 0;
+  max-width: 1000px;
+  margin: 0 auto;
   color: #111;
   background: #fff;
   border-radius: 0;
   box-shadow: none;
-  padding-bottom: 40px;
+  padding: 16px 16px 16px 16px;
   font-size: 15px;
 }
 
-.log-header {
-  position: relative;
-  margin-bottom: 12px;
-}
-.log-header-inner {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  top: 0px;
-  min-height: 30px;
-  width: min(900px, calc(100% - 36px));
-  z-index: 1001;
-  border-bottom: 1px solid #eef3f9;
-  background: #fff;
-  box-shadow: 0 6px 18px rgba(33,150,243,0.03);
-  padding: 8px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.header-left { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: var(--left-col); height: 24px }
+.log-header { margin: 0 0 12px 0 }
+.log-header h2 { display:flex; justify-content: space-between; align-items: center; white-space: nowrap; overflow: visible; text-overflow: ellipsis; width: 100%; padding: 4px 0px; box-sizing: border-box }
 .filter-center { display:flex; align-items:center; gap:8px }
 .filter-text { font-weight: 800; color: #1976d2; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
-.header-right { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display:flex; align-items:center; gap:8px }
+.header-right { display:flex; align-items:center; gap:8px }
 
+.header-left-group { display:flex; align-items:center; gap:5px; position:relative; flex: 1 }
+.device-select { background:transparent; border:none; padding:0; margin-left:0; color:#000; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:6px }
+.device-select-label { max-width:220px; display:inline-block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#000 }
+.caret { font-size:12px; color:#888 }
+.device-dropdown { position:absolute; left:0; top:calc(100% + 8px); background:#fff; border:1px solid #e6eefb; border-radius:6px; box-shadow: 0 6px 18px rgba(33,150,243,0.06); z-index:2000; list-style:none; padding:6px 0; margin:0; min-width:220px; max-height:220px; overflow:auto }
+.device-dropdown li { padding:8px 12px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#222 }
+.device-dropdown li:hover { background:#f5faff }
+.device-dropdown li.active { background:#eaf4ff; color:#1976d2; font-weight:700 }
 /* Buttons — same visual style as Log page */
 .log-btn {
   background: #2196f3;
@@ -400,4 +454,18 @@ onUnmounted(() => {
 .status-unknown .status-text { color:#9e9e9e }
 .status-all .status-text { color:#1976d2 }
 .status-pending .status-text { color:#ffb300 }
+.status-bar { display:flex; align-items:center; gap:12px; background:#fafafa; padding:10px 12px; border-radius:8px; margin-bottom:12px; border:1px solid #eef6ff }
+.status-left { display:flex; align-items:center; gap:8px }
+.status-icon { width:20px; height:20px; display:block }
+.battery-text { font-weight:700; color:#1976d2 }
+.power-save-panel { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fafafa; padding:10px 12px; border-radius:8px; margin-bottom:12px; border:1px solid #f0f0f0 }
+.power-save-panel .ps-left { display:flex; align-items:center; gap:8px }
+.ps-label { font-weight:700; color:#1976d2 }
+.ps-desc { font-size:13px; color:#666 }
+.ps-switch { position:relative; display:inline-block; width:48px; height:26px }
+.ps-switch input { opacity:0; width:0; height:0 }
+.ps-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#ccc; transition:.18s; border-radius:20px }
+.ps-slider:before { content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff; transition:.18s; border-radius:50% }
+.ps-switch input:checked + .ps-slider { background:#4caf50 }
+.ps-switch input:checked + .ps-slider:before { transform: translateX(22px) }
 </style>
