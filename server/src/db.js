@@ -152,6 +152,20 @@ export async function initDb(options = {}) {
     console.warn('schema.sql not found at', schemaPath);
   }
 
+  // Migration: ensure device_commands has battery and low_power columns
+  try {
+    const cols = db.prepare("PRAGMA table_info('device_commands')").all();
+    const colNames = (cols || []).map(c => String(c.name));
+    if (!colNames.includes('battery')) {
+      try { db.exec("ALTER TABLE device_commands ADD COLUMN battery INTEGER"); } catch (e) { console.warn('Failed to add battery column', e && e.message ? e.message : e); }
+    }
+    if (!colNames.includes('low_power')) {
+      try { db.exec("ALTER TABLE device_commands ADD COLUMN low_power INTEGER"); } catch (e) { console.warn('Failed to add low_power column', e && e.message ? e.message : e); }
+    }
+  } catch (e) {
+    console.warn('device_commands migration check failed', e && e.message ? e.message : e);
+  }
+
   prepareStatements();
 
   try {
@@ -447,6 +461,15 @@ export function updateCommandStatus({ cmdId, status, sentTs, ackTs, ackPayload, 
   if (ackPayload !== undefined) { sets.push('ack_payload = @ack_payload'); params.ack_payload = ackPayload == null ? null : String(ackPayload); }
   if (retries !== undefined) { sets.push('retries = @retries'); params.retries = retries == null ? null : Number(retries); }
   if (lastError !== undefined) { sets.push('last_error = @last_error'); params.last_error = lastError == null ? null : String(lastError); }
+  if (arguments && arguments.length > 0 && arguments[0] && Object.prototype.hasOwnProperty.call(arguments[0], 'battery')) {
+    sets.push('battery = @battery');
+    params.battery = arguments[0].battery == null ? null : Number(arguments[0].battery);
+  }
+  if (arguments && arguments.length > 0 && arguments[0] && Object.prototype.hasOwnProperty.call(arguments[0], 'lowPower')) {
+    sets.push('low_power = @low_power');
+    const lp = arguments[0].lowPower;
+    params.low_power = lp == null ? null : (lp ? 1 : 0);
+  }
   if (sets.length === 0) throw new Error('No fields to update provided.');
   const sql = `UPDATE device_commands SET ${sets.join(', ')} WHERE cmd_id = @cmd_id`;
   const stmt = db.prepare(sql);

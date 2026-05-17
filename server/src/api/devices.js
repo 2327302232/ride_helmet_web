@@ -139,7 +139,10 @@ router.get('/api/devices/:deviceId/request_status/:cmdId/result', async (req, re
       }
     }
 
-    return res.json({ cmd: { cmdId: cmdRow.cmd_id, deviceId: cmdRow.device_id, ts: cmdRow.ts, status: cmdRow.status, sentTs: cmdRow.sent_ts, ackTs: cmdRow.ack_ts }, ackPayload, statusRecords: statusRows, onlineFromStatus })
+    const cmdInfo = { cmdId: cmdRow.cmd_id, deviceId: cmdRow.device_id, ts: cmdRow.ts, status: cmdRow.status, sentTs: cmdRow.sent_ts, ackTs: cmdRow.ack_ts }
+    try { cmdInfo.battery = cmdRow.battery == null ? null : Number(cmdRow.battery) } catch (e) { cmdInfo.battery = cmdRow.battery }
+    try { cmdInfo.lowPower = cmdRow.low_power == null ? null : (Number(cmdRow.low_power) === 1) } catch (e) { cmdInfo.lowPower = !!cmdRow.low_power }
+    return res.json({ cmd: cmdInfo, ackPayload, statusRecords: statusRows, onlineFromStatus })
   } catch (err) {
     console.error('GET /api/devices/:deviceId/request_status/:cmdId/result error', err)
     return res.status(500).json({ error: err?.message || String(err) })
@@ -152,7 +155,7 @@ router.get('/api/devices/:deviceId/commands', async (req, res) => {
     const { deviceId } = req.params
     const { type, action, limit } = req.query || {}
     const lim = limit ? Number(limit) : 10
-    let sql = 'SELECT id, cmd_id AS cmdId, device_id AS deviceId, ts, type, action, value_json AS valueJson, status, sent_ts AS sentTs, ack_ts AS ackTs, ack_payload AS ackPayload, last_error AS lastError FROM device_commands WHERE device_id = ?'
+    let sql = 'SELECT id, cmd_id AS cmdId, device_id AS deviceId, ts, type, action, value_json AS valueJson, status, sent_ts AS sentTs, ack_ts AS ackTs, ack_payload AS ackPayload, last_error AS lastError, battery, low_power AS lowPower FROM device_commands WHERE device_id = ?'
     const params = [deviceId]
     if (type) { sql += ' AND type = ?'; params.push(String(type)) }
     if (action) { sql += ' AND action = ?'; params.push(String(action)) }
@@ -164,6 +167,9 @@ router.get('/api/devices/:deviceId/commands', async (req, res) => {
       const copy = Object.assign({}, r)
       try { copy.ackPayload = copy.ackPayload ? JSON.parse(copy.ackPayload) : null } catch (e) { /* leave as raw */ }
       try { copy.valueJson = copy.valueJson ? JSON.parse(copy.valueJson) : null } catch (e) { /* ignore */ }
+      // normalize battery & lowPower
+      try { copy.battery = copy.battery == null ? null : Number(copy.battery) } catch (e) { copy.battery = copy.battery }
+      try { copy.lowPower = copy.lowPower == null ? null : (Number(copy.lowPower) === 1) } catch (e) { copy.lowPower = !!copy.lowPower }
       return copy
     })
     return res.json({ commands: parsed })

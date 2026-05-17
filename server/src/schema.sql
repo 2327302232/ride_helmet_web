@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS device_commands (
   type TEXT NOT NULL,
   action TEXT NOT NULL,
   value_json TEXT NOT NULL,
+  battery INTEGER,
+  low_power INTEGER,
   status TEXT NOT NULL DEFAULT 'queued',
   sent_ts INTEGER,
   ack_ts INTEGER,

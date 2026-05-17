@@ -183,6 +183,10 @@ async function start() {
         const ackPayload = JSON.stringify(payload.raw || payload);
         // last_error
         const lastError = payload.ok === false ? (payload.message || 'ACK failed') : undefined;
+        // extract battery / low_power from payload.raw or payload
+        const raw = payload.raw || payload;
+        const batteryVal = raw && (raw.battery ?? raw.bat ?? raw.battery_level ?? raw.batteryLevel);
+        const lowPowerVal = raw && (raw.low_power ?? raw.lowPower ?? raw.lowPowerMode ?? null);
         // DB 更新
         const { updateCommandStatus } = await import('./db.js');
         try {
@@ -191,7 +195,9 @@ async function start() {
             status,
             ackTs,
             ackPayload,
-            lastError
+            lastError,
+            battery: batteryVal == null ? undefined : batteryVal,
+            lowPower: lowPowerVal == null ? undefined : lowPowerVal
           });
           console.log(`[ACK] DB updated for cmdId ${cmdId} -> status ${status}, changes: ${res.changes}`);
         } catch (err) {

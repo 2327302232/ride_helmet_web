@@ -186,8 +186,11 @@ async function handleAck(deviceId, payloadObj, topic) {
   const ok = payloadObj.ok === true || payloadObj.ok === 'true' || payloadObj.ok === 1 || payloadObj.ok === '1';
   const ackTs = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
 
-  try {
-    updateCommandStatus({ cmdId, status: ok ? 'acked' : 'failed', ackTs, ackPayload: JSON.stringify(payloadObj) });
+    try {
+      // extract battery / low_power if present in payload
+      const batteryVal = payloadObj && (payloadObj.battery ?? payloadObj.bat ?? payloadObj.battery_level ?? payloadObj.batteryLevel);
+      const lowPowerVal = payloadObj && (payloadObj.low_power ?? payloadObj.lowPower ?? payloadObj.lowPowerMode ?? null);
+      updateCommandStatus({ cmdId, status: ok ? 'acked' : 'failed', ackTs, ackPayload: JSON.stringify(payloadObj), battery: batteryVal == null ? undefined : batteryVal, lowPower: lowPowerVal == null ? undefined : lowPowerVal });
   } catch (err) {
     emitter.emit('error', { error: err, context: { cmdId, deviceId } });
   }
@@ -258,6 +261,16 @@ async function handleStatus(deviceId, payloadObj, topic) {
             emitter.emit('error', { error: e, context: { where: 'setDeviceOnline from status', deviceId } });
           }
           try { deletePendingRequestByCmd(pending.cmdId); } catch (e) {}
+          // 如果 payload 中包含 battery/low_power，则更新对应的 device_commands 行
+          try {
+            const batteryVal = payloadObj.battery ?? payloadObj.bat ?? payloadObj.battery_level ?? null;
+            const lowPowerVal = payloadObj.low_power ?? payloadObj.lowPower ?? null;
+            if (batteryVal !== undefined || lowPowerVal !== undefined) {
+              try { updateCommandStatus({ cmdId: payloadCmd, battery: batteryVal == null ? undefined : batteryVal, lowPower: lowPowerVal == null ? undefined : lowPowerVal }); } catch (e) { emitter.emit('error', { error: e, context: { where: 'updateCommandStatus from status', cmdId: payloadCmd } }); }
+            }
+          } catch (e) {
+            // ignore
+          }
         } else {
           // ignore updating current device_status while waiting for matching reply
         }

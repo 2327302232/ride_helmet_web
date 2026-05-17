@@ -23,16 +23,16 @@
       <div class="status-bar">
         <div class="status-left">
           <img :src="batteryIcon" alt="battery" class="status-icon" />
-          <div class="battery-text">{{ batteryLevel }}%</div>
+          <div class="battery-text">{{ simStatus === 'offline' ? 'unknown' : (batteryLevel + '%') }}</div>
         </div>
       </div>
-      <div class="power-save-panel">
+      <div class="power-save-panel" :class="{disabled: simStatus === 'offline'}">
         <div class="ps-left">
           <span class="ps-label">省电模式</span>
-          <span class="ps-desc">{{ powerSave ? '已启用' : '未启用' }}</span>
+          <span class="ps-desc">{{ simStatus === 'offline' ? '不可用（设备离线）' : (powerSave ? '已启用' : '未启用') }}</span>
         </div>
         <label class="ps-switch">
-          <input type="checkbox" v-model="powerSave" />
+          <input type="checkbox" :checked="powerSave" @click.prevent="onTogglePowerSave" :disabled="powerSaveLoading || loading || simStatus === 'offline'" />
           <span class="ps-slider"></span>
         </label>
       </div>
@@ -62,12 +62,15 @@ const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
 const commandBasis = ref(null)
 const powerSave = ref(false)
+const powerSaveLoading = ref(false)
 const showDeviceDropdown = ref(false)
 const deviceSelectRef = ref(null)
 const batteryLevel = ref(78)
 const charging = ref(false)
 const batteryIcon = computed(() => {
   try {
+    // If device is offline, show empty icon
+    if (simStatus.value === 'offline') return batteryEmpty
     const lvl = Number(batteryLevel.value)
     const v = Number.isFinite(lvl) ? Math.max(0, Math.min(100, Math.round(lvl))) : 0
     // charging has priority
@@ -283,10 +286,70 @@ async function loadCommandBasis(devId) {
         else if (s === 'failed' || s === 'expired') simStatus.value = 'offline'
         else if (s === 'sent' || s === 'queued') simStatus.value = 'pending'
         else simStatus.value = 'unknown'
+        // read battery and low power state from latest command if available
+        try {
+          if (latest.battery !== undefined && latest.battery !== null) {
+            batteryLevel.value = Number(latest.battery)
+            try { localStorage.setItem('ride_battery', JSON.stringify(Number(latest.battery))) } catch (e) {}
+          }
+        } catch (e) {}
+        try {
+          if (latest.lowPower !== undefined && latest.lowPower !== null) {
+            powerSave.value = !!latest.lowPower
+            try { localStorage.setItem('ride_power_save', JSON.stringify(!!latest.lowPower)) } catch (e) {}
+          }
+        } catch (e) {}
       }
     }
   } catch (e) {
     // ignore
+  }
+}
+
+// Send a low-power set command via backend and return cmdId
+async function sendLowPowerCommand(enable) {
+  if (!deviceId.value) throw new Error('no device selected')
+  const body = { deviceId: deviceId.value, type: 'power', action: 'set', value: { low_power: !!enable } }
+  const res = await fetch(`${backendBase.replace(/\/$/, '')}/api/command`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (!res.ok) throw new Error('command publish failed')
+  const data = await res.json().catch(() => null)
+  return data && data.cmdId ? data.cmdId : null
+}
+
+// Handler called when user toggles the power-save slider
+// We use click.prevent on the input so the browser won't flip the checkbox
+// and we can control visual state explicitly. evOrWant can be an Event or a boolean.
+async function onTogglePowerSave(evOrWant) {
+  const want = typeof evOrWant === 'boolean' ? evOrWant : !powerSave.value
+  const prev = powerSave.value
+  // keep visual state unchanged until confirmation; show loading
+  powerSaveLoading.value = true
+  try {
+    const cmdId = await sendLowPowerCommand(want)
+    if (!cmdId) throw new Error('no cmdId')
+    ensureSocket()
+    subscribeDevice(deviceId.value)
+    const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
+    try { appendRawLog({ source: 'low_power_reply', deviceId: deviceId.value, cmdId, data: reply }) } catch (e) {}
+    if (reply) {
+      const ok = reply.ok === true || (reply.payload && reply.payload.ok === true) || (reply.raw && reply.raw.ok === true)
+      const lp = (reply.low_power ?? (reply.payload && reply.payload.low_power) ?? (reply.raw && reply.raw.low_power))
+      if (ok || (lp !== undefined && String(lp) === String(want))) {
+        powerSave.value = want
+        try { localStorage.setItem('ride_power_save', JSON.stringify(!!powerSave.value)) } catch (e) {}
+      } else {
+        // revert to prev (visual will follow reactive state)
+        powerSave.value = prev
+      }
+    } else {
+      // timeout -> revert
+      powerSave.value = prev
+    }
+  } catch (e) {
+    console.warn('send low power command failed', e)
+    powerSave.value = prev
+  } finally {
+    powerSaveLoading.value = false
   }
 }
 
@@ -468,4 +531,6 @@ onUnmounted(() => {
 .ps-slider:before { content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff; transition:.18s; border-radius:50% }
 .ps-switch input:checked + .ps-slider { background:#4caf50 }
 .ps-switch input:checked + .ps-slider:before { transform: translateX(22px) }
+.power-save-panel.disabled { opacity: 0.55; pointer-events: none }
+.power-save-panel.disabled .ps-desc { color: #9e9e9e }
 </style>
