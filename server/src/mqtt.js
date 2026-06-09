@@ -81,6 +81,47 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_DELAY_MS = 60000;
 let manualStop = false;
 
+function extractBatteryLowPower(payloadObj) {
+  const batteryVal = payloadObj && (payloadObj.battery ?? payloadObj.bat ?? payloadObj.battery_level ?? payloadObj.batteryLevel);
+  const lowPowerVal = payloadObj && (payloadObj.low_power ?? payloadObj.lowPower ?? payloadObj.lowPowerMode ?? null);
+  return { batteryVal, lowPowerVal };
+}
+
+function clearAckTimer(cmdId) {
+  try {
+    const t = ackTimers.get(cmdId);
+    if (t) {
+      clearTimeout(t);
+      ackTimers.delete(cmdId);
+    }
+  } catch (e) {
+    // ignore timer cleanup errors
+  }
+}
+
+function markCommandReplied({ deviceId, cmdId, ok = true, ts = null, payloadObj = null, message = null, source = 'mqtt-reply' } = {}) {
+  if (!cmdId) return;
+  const replyTs = ts != null ? Number(ts) : Date.now();
+  const { batteryVal, lowPowerVal } = extractBatteryLowPower(payloadObj || {});
+
+  // 真实设备回复（ack 或带 cmdId 的 status）都应结束 ACK 等待，避免 3 秒后又被超时覆盖为 failed/expired。
+  clearAckTimer(cmdId);
+
+  try {
+    updateCommandStatus({
+      cmdId,
+      status: ok ? 'acked' : 'failed',
+      ackTs: replyTs,
+      ackPayload: payloadObj == null ? null : JSON.stringify(payloadObj),
+      lastError: ok ? null : (message || `${source} failed`),
+      battery: batteryVal == null ? undefined : batteryVal,
+      lowPower: lowPowerVal == null ? undefined : lowPowerVal
+    });
+  } catch (err) {
+    emitter.emit('error', { error: err, context: { where: 'markCommandReplied', cmdId, deviceId, source } });
+  }
+}
+
 function safeJsonParse(buf) {
   try {
     if (!buf) return null;
@@ -186,25 +227,7 @@ async function handleAck(deviceId, payloadObj, topic) {
   const ok = payloadObj.ok === true || payloadObj.ok === 'true' || payloadObj.ok === 1 || payloadObj.ok === '1';
   const ackTs = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
 
-    try {
-      // extract battery / low_power if present in payload
-      const batteryVal = payloadObj && (payloadObj.battery ?? payloadObj.bat ?? payloadObj.battery_level ?? payloadObj.batteryLevel);
-      const lowPowerVal = payloadObj && (payloadObj.low_power ?? payloadObj.lowPower ?? payloadObj.lowPowerMode ?? null);
-      updateCommandStatus({ cmdId, status: ok ? 'acked' : 'failed', ackTs, ackPayload: JSON.stringify(payloadObj), battery: batteryVal == null ? undefined : batteryVal, lowPower: lowPowerVal == null ? undefined : lowPowerVal });
-  } catch (err) {
-    emitter.emit('error', { error: err, context: { cmdId, deviceId } });
-  }
-
-  // 清除对应 ACK 超时计时器
-  try {
-    const t = ackTimers.get(cmdId);
-    if (t) {
-      clearTimeout(t);
-      ackTimers.delete(cmdId);
-    }
-  } catch (e) {
-    // ignore
-  }
+  markCommandReplied({ deviceId, cmdId, ok, ts: ackTs, payloadObj, message: payloadObj.message, source: 'ack' });
 
   emitter.emit('cmd_ack', { deviceId, cmdId, ok, message: payloadObj.message, ts: ackTs, raw: payloadObj });
 
@@ -236,6 +259,13 @@ async function handleStatus(deviceId, payloadObj, topic) {
 
   const online = payloadObj.online === true || payloadObj.online === 'true' || payloadObj.online === 1 || payloadObj.online === '1';
   const ts = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
+  const payloadCmd = payloadObj.cmdId || payloadObj.cmd_id || payloadObj.cmd || null;
+
+  // 兼容设备只回复 status、不回复 ack 的情况：只要 status 带有 cmdId，就把该命令视为已回复，
+  // 并清掉 ACK 超时计时器，避免网页先收到在线状态后又被超时事件覆盖为失败。
+  if (payloadCmd) {
+    markCommandReplied({ deviceId, cmdId: payloadCmd, ok: online !== false, ts, payloadObj, message: payloadObj.message, source: 'status' });
+  }
   // 若为设备上报的 status（包含状态/报错，如 GNSS 报错），写入 status 表
   try {
     if (payloadObj.status !== undefined || payloadObj.message !== undefined) {
@@ -253,7 +283,6 @@ async function handleStatus(deviceId, payloadObj, topic) {
       const pending = getPendingRequestByDevice(deviceId);
       if (pending) {
         // 若 payload 中包含 cmdId，则匹配并处理；否则忽略对 device_status_current 的更新（只保留历史 status 记录）
-        const payloadCmd = payloadObj.cmdId || payloadObj.cmd_id || null;
         if (payloadCmd && String(payloadCmd) === String(pending.cmdId)) {
           try {
             setDeviceOnline({ deviceId, online: online, ts, rawJson: JSON.stringify(payloadObj), updatedAt: Date.now() });
@@ -263,8 +292,7 @@ async function handleStatus(deviceId, payloadObj, topic) {
           try { deletePendingRequestByCmd(pending.cmdId); } catch (e) {}
           // 如果 payload 中包含 battery/low_power，则更新对应的 device_commands 行
           try {
-            const batteryVal = payloadObj.battery ?? payloadObj.bat ?? payloadObj.battery_level ?? null;
-            const lowPowerVal = payloadObj.low_power ?? payloadObj.lowPower ?? null;
+            const { batteryVal, lowPowerVal } = extractBatteryLowPower(payloadObj);
             if (batteryVal !== undefined || lowPowerVal !== undefined) {
               try { updateCommandStatus({ cmdId: payloadCmd, battery: batteryVal == null ? undefined : batteryVal, lowPower: lowPowerVal == null ? undefined : lowPowerVal }); } catch (e) { emitter.emit('error', { error: e, context: { where: 'updateCommandStatus from status', cmdId: payloadCmd } }); }
             }
@@ -337,7 +365,7 @@ export async function startMqtt() {
     // disable mqtt.js auto-reconnect: we implement controlled reconnect below
     reconnectPeriod: 0,
     rejectUnauthorized,
-    connectTimeout: 30000,
+    connectTimeout: 100000,
   };
   if (MQTT_USERNAME) optsBase.username = MQTT_USERNAME;
   if (MQTT_PASSWORD) optsBase.password = MQTT_PASSWORD;
@@ -393,11 +421,13 @@ export async function startMqtt() {
       client.subscribe(`${prefix}/+/events/#`, { qos: qosTelemetry }, (err, granted) => {
         if (err) emitter.emit('error', { error: err, context: { action: 'subscribe', topic: `${prefix}/+/events/#` } });
       });
-      client.subscribe(`${prefix}/+/ack`, { qos: 1 }, (err, granted) => {
+      client.subscribe(`${prefix}/+/ack`, { qos: 0 }, (err, granted) => {
         if (err) emitter.emit('error', { error: err, context: { action: 'subscribe', topic: `${prefix}/+/ack` } });
+        else console.log('subscribed', granted);
       });
-      client.subscribe(`${prefix}/+/status`, { qos: 1 }, (err, granted) => {
+      client.subscribe(`${prefix}/+/status`, { qos: 0 }, (err, granted) => {
         if (err) emitter.emit('error', { error: err, context: { action: 'subscribe', topic: `${prefix}/+/status` } });
+        else console.log('subscribed', granted);
       });
     });
 
@@ -497,7 +527,10 @@ export function publishCommand({ deviceId, cmdId = null, type, action, value } =
       // 启动 ACK 超时计时器
       try {
         const t = setTimeout(() => {
-          try { updateCommandStatus({ cmdId: finalCmdId, status: 'expired' }); } catch (e) { emitter.emit('error', { error: e, context: { cmdId: finalCmdId } }); }
+          try {
+            if (!ackTimers.has(finalCmdId)) return;
+            updateCommandStatus({ cmdId: finalCmdId, status: 'expired' });
+          } catch (e) { emitter.emit('error', { error: e, context: { cmdId: finalCmdId } }); }
           ackTimers.delete(finalCmdId);
           emitter.emit('cmd_ack', { deviceId, cmdId: finalCmdId, ok: false, message: 'ack timeout', ts: Date.now(), raw: null });
         }, ackTimeoutMs);

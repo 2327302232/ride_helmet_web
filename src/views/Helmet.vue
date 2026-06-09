@@ -191,6 +191,7 @@ function handleWsMessage(msg) {
     // status payload may include raw object with cmdId
     let cmdId = null
     try {
+      if (p && (p.cmdId || p.cmd_id)) cmdId = p.cmdId || p.cmd_id
       if (p && p.raw) {
         const raw = p.raw
         if (raw && (raw.cmdId || raw.cmd_id)) cmdId = raw.cmdId || raw.cmd_id
@@ -201,6 +202,67 @@ function handleWsMessage(msg) {
       pendingResolvers.delete(cmdId)
       try { fn(p) } catch (e) {}
     }
+  }
+}
+
+function applyReplyState(reply) {
+  if (!reply) return false
+  const raw = reply.raw || reply.payload || reply
+  if (reply.ok === true || raw.ok === true || reply.online === true || raw.online === true) {
+    simStatus.value = 'online'
+  } else if (reply.ok === false || raw.ok === false || reply.online === false || raw.online === false) {
+    simStatus.value = 'offline'
+  } else if (reply.status === 'acked' || raw.status === 'acked') {
+    simStatus.value = 'online'
+  } else {
+    return false
+  }
+
+  try {
+    const b = raw.battery ?? raw.bat ?? raw.battery_level ?? raw.batteryLevel ?? reply.battery
+    if (b !== undefined && b !== null) {
+      batteryLevel.value = Number(b)
+      try { localStorage.setItem('ride_battery', JSON.stringify(Number(b))) } catch (e) {}
+    }
+  } catch (e) {}
+
+  try {
+    const lp = raw.low_power ?? raw.lowPower ?? reply.low_power ?? reply.lowPower
+    if (lp !== undefined && lp !== null) {
+      powerSave.value = !!lp
+      try { localStorage.setItem('ride_power_save', JSON.stringify(!!lp)) } catch (e) {}
+    }
+  } catch (e) {}
+
+  return true
+}
+
+async function fetchCommandResult(devId, cmdId) {
+  if (!devId || !cmdId) return null
+  try {
+    const url = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(devId)}/request_status/${encodeURIComponent(cmdId)}/result`
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return await res.json().catch(() => null)
+  } catch (e) {
+    return null
+  }
+}
+
+async function waitForCmdReplyWithFallback(devId, cmdId, timeout = 3000) {
+  try {
+    const reply = await waitForCmdReply(cmdId, timeout)
+    return reply
+  } catch (e) {
+    // 设备回复可能在 WS 订阅建立前已经被后端收到；超时后再从后端 DB 查询一次该 cmdId 的结果。
+    const result = await fetchCommandResult(devId, cmdId)
+    try { appendRawLog({ source: 'result_fetch_after_ws_timeout', deviceId: devId, cmdId, data: result }) } catch (err) {}
+    if (result) {
+      if (result.ackPayload) return result.ackPayload
+      if (result.onlineFromStatus !== null && result.onlineFromStatus !== undefined) return { online: !!result.onlineFromStatus, raw: result }
+      if (result.cmd && result.cmd.status === 'acked') return { ok: true, raw: result.cmd }
+    }
+    return null
   }
 }
 
@@ -408,17 +470,11 @@ async function onRefresh() {
             simStatus.value = 'pending'
             ensureSocket()
             subscribeDevice(deviceId.value)
-            const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
+            const reply = await waitForCmdReplyWithFallback(deviceId.value, cmdId, 3000)
             try { appendRawLog({ source: 'reply_wait', deviceId: deviceId.value, cmdId, data: reply }) } catch (e) {}
             if (reply) {
               // reply 可能来自 cmd_ack 或 status
-              if (reply.ok === true || reply.online === true || (reply.payload && reply.payload.online === true)) {
-                simStatus.value = 'online'
-              } else if (reply.ok === false || reply.online === false || (reply.payload && reply.payload.online === false)) {
-                simStatus.value = 'offline'
-              } else if (reply.status === 'acked' || (reply.payload && reply.payload.status === 'acked')) {
-                simStatus.value = 'online'
-              } else {
+              if (!applyReplyState(reply)) {
                 // 无法明确判定，回退到后端持久化状态
                 await loadDeviceOnlineFromServer(deviceId.value)
               }
