@@ -153,6 +153,76 @@ function formatLocationDiagnostics(diag) {
   }
 }
 
+function initCitySearch() {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!window.AMap) return reject(new Error('AMap SDK 尚未加载'))
+      window.AMap.plugin('AMap.CitySearch', () => {
+        try {
+          resolve(new window.AMap.CitySearch())
+        } catch (e) {
+          reject(e)
+        }
+      })
+    } catch (e) {
+      reject(e)
+    }
+  })
+}
+
+async function locateByCityFallback(reason = null) {
+  try {
+    status.value = '精确定位不可用，尝试城市级定位…'
+    const citySearch = await initCitySearch()
+    const cityResult = await new Promise((resolve, reject) => {
+      try {
+        citySearch.getLocalCity((st, result) => {
+          if (st === 'complete' && result) resolve(result)
+          else reject(result || new Error('CitySearch failed'))
+        })
+      } catch (e) {
+        reject(e)
+      }
+    })
+
+    let center = null
+    try {
+      if (cityResult.bounds && typeof cityResult.bounds.getCenter === 'function') {
+        const c = cityResult.bounds.getCenter()
+        center = [Number(c.lng), Number(c.lat)]
+      }
+    } catch (e) {}
+
+    if (center && Number.isFinite(center[0]) && Number.isFinite(center[1])) {
+      marker.setPosition(center)
+      map.setCenter(center)
+      map.setZoom(11)
+      posText.value = `${center[0].toFixed(6)}, ${center[1].toFixed(6)}（城市级）`
+    } else if (cityResult.city && typeof map.setCity === 'function') {
+      map.setCity(cityResult.city)
+      posText.value = `${cityResult.city}（城市级）`
+    } else {
+      throw new Error('城市级定位没有返回可用位置')
+    }
+
+    accText.value = '城市级粗略定位'
+    status.value = '已使用城市级粗略定位'
+    console.warn('[geo city fallback]', { cityResult, reason })
+    await showMessage({
+      title: '已使用粗略定位',
+      message: `浏览器精确定位不可用，已回退到高德城市/IP 粗略定位。若要精确定位，请在 iOS 设置和浏览器站点权限中允许定位。当前城市：${cityResult.city || cityResult.province || '未知'}`,
+      details: reason ? formatLocationDiagnostics(reason) : '',
+      type: 'warn',
+      confirmText: '知道了'
+    })
+    return true
+  } catch (e) {
+    console.warn('[geo city fallback failed]', e)
+    status.value = '城市级定位也失败'
+    return false
+  }
+}
+
 function _clearSegmentMarkers() {
   try {
     if (Array.isArray(segmentMarkers) && segmentMarkers.length) {
@@ -350,6 +420,8 @@ async function locate() {
         errorCode: getGeoErrorCode(e),
         errorMessage: getGeoErrorMessage(e)
       })
+      const cityOk = await locateByCityFallback(diagnostics)
+      if (cityOk) return
       const res = await showMessage({
         title: denied ? '定位权限被拒绝' : '定位失败',
         message: buildLocationHelpMessage(e),
