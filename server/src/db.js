@@ -24,6 +24,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,38 @@ const __dirname = path.dirname(__filename);
 
 let db = null;
 const stmts = {};
+
+const PASSWORD_PREFIX = 'pbkdf2_sha256';
+const PASSWORD_ITERATIONS = 120000;
+const PASSWORD_KEYLEN = 32;
+const PASSWORD_DIGEST = 'sha256';
+
+export function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(String(password), salt, PASSWORD_ITERATIONS, PASSWORD_KEYLEN, PASSWORD_DIGEST).toString('hex');
+  return `${PASSWORD_PREFIX}$${PASSWORD_ITERATIONS}$${salt}$${hash}`;
+}
+
+export function isPasswordHash(value) {
+  return typeof value === 'string' && value.startsWith(`${PASSWORD_PREFIX}$`);
+}
+
+export function verifyPassword(password, stored) {
+  const storedStr = stored == null ? '' : String(stored);
+  if (!isPasswordHash(storedStr)) return String(password) === storedStr;
+  const parts = storedStr.split('$');
+  if (parts.length !== 4) return false;
+  const iterations = Number(parts[1]);
+  const salt = parts[2];
+  const expected = parts[3];
+  if (!Number.isFinite(iterations) || !salt || !expected) return false;
+  const actual = crypto.pbkdf2Sync(String(password), salt, iterations, PASSWORD_KEYLEN, PASSWORD_DIGEST).toString('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+  } catch (e) {
+    return false;
+  }
+}
 
 function prepareStatements() {
   stmts.insertGps = db.prepare(`INSERT INTO gps_points (device_id, ts, lng, lat, speed, heading, altitude, accuracy, battery, status, source, raw_json, created_at)
@@ -41,8 +74,8 @@ function prepareStatements() {
   stmts.getTrack = db.prepare(`SELECT ts, lng, lat, speed, battery, status FROM gps_points
     WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
 
-  stmts.insertCmd = db.prepare(`INSERT INTO device_commands (cmd_id, device_id, ts, type, action, value_json, status, retries)
-    VALUES (@cmd_id, @device_id, @ts, @type, @action, @value_json, @status, @retries)`);
+  stmts.insertCmd = db.prepare(`INSERT INTO device_commands (cmd_id, device_id, ts, type, action, value_json, status, retries, created_at, updated_at)
+    VALUES (@cmd_id, @device_id, @ts, @type, @action, @value_json, @status, @retries, @created_at, @updated_at)`);
 
   stmts.getCmdById = db.prepare(`SELECT * FROM device_commands WHERE cmd_id = @cmd_id`);
 
@@ -57,6 +90,59 @@ function prepareStatements() {
 
   stmts.getLatestStatus = db.prepare(`SELECT device_id AS deviceId, ts, status, message, source, raw_json, created_at FROM status
     WHERE device_id = @device_id ORDER BY ts DESC LIMIT 1`);
+
+  // helmet telemetry statements: GPS + 心率 + 碰撞 + 温湿度等传感器数据
+  stmts.insertHelmetTelemetry = db.prepare(`INSERT INTO helmet_telemetry (
+      device_id, ts, lng, lat, speed, heading, altitude, accuracy,
+      heart_rate, temperature, humidity, collision, collision_level, collision_score,
+      battery, low_power, source, raw_json, created_at
+    ) VALUES (
+      @device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy,
+      @heart_rate, @temperature, @humidity, @collision, @collision_level, @collision_score,
+      @battery, @low_power, @source, @raw_json, @created_at
+    )`);
+
+  stmts.upsertHelmetTelemetryCurrent = db.prepare(`INSERT INTO helmet_telemetry_current (
+      device_id, ts, lng, lat, speed, heart_rate, temperature, humidity,
+      collision, collision_level, collision_score, battery, low_power, raw_json, updated_at
+    ) VALUES (
+      @device_id, @ts, @lng, @lat, @speed, @heart_rate, @temperature, @humidity,
+      @collision, @collision_level, @collision_score, @battery, @low_power, @raw_json, @updated_at
+    ) ON CONFLICT(device_id) DO UPDATE SET
+      ts = @ts,
+      lng = @lng,
+      lat = @lat,
+      speed = @speed,
+      heart_rate = @heart_rate,
+      temperature = @temperature,
+      humidity = @humidity,
+      collision = @collision,
+      collision_level = @collision_level,
+      collision_score = @collision_score,
+      battery = @battery,
+      low_power = @low_power,
+      raw_json = @raw_json,
+      updated_at = @updated_at`);
+
+  stmts.getHelmetTelemetry = db.prepare(`SELECT id, device_id AS deviceId, ts, lng, lat, speed, heading, altitude, accuracy,
+      heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
+      collision_score AS collisionScore, battery, low_power AS lowPower, source, raw_json AS rawJson, created_at AS createdAt
+    FROM helmet_telemetry
+    WHERE device_id = @device_id AND ts >= @from AND ts <= @to
+    ORDER BY ts ASC LIMIT @limit`);
+
+  stmts.getHelmetTelemetryCurrent = db.prepare(`SELECT device_id AS deviceId, ts, lng, lat, speed,
+      heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
+      collision_score AS collisionScore, battery, low_power AS lowPower, raw_json AS rawJson, updated_at AS updatedAt
+    FROM helmet_telemetry_current WHERE device_id = @device_id`);
+
+  stmts.insertCollisionEvent = db.prepare(`INSERT INTO helmet_collision_events (device_id, ts, level, score, lng, lat, speed, message, raw_json, created_at)
+    VALUES (@device_id, @ts, @level, @score, @lng, @lat, @speed, @message, @raw_json, @created_at)`);
+
+  stmts.listCollisionEvents = db.prepare(`SELECT id, device_id AS deviceId, ts, level, score, lng, lat, speed, message, raw_json AS rawJson, created_at AS createdAt
+    FROM helmet_collision_events
+    WHERE device_id = @device_id AND ts >= @from AND ts <= @to
+    ORDER BY ts DESC LIMIT @limit`);
 
   // device_status_current statements (stores latest online state per device)
   stmts.upsertDeviceStatus = db.prepare(`INSERT INTO device_status_current (device_id, online, ts, raw_json, updated_at)
@@ -74,6 +160,7 @@ function prepareStatements() {
   stmts.getPendingByCmd = db.prepare(`SELECT device_id AS deviceId, cmd_id AS cmdId, created_at FROM device_pending_requests WHERE cmd_id = @cmd_id`);
   stmts.deletePendingByCmd = db.prepare(`DELETE FROM device_pending_requests WHERE cmd_id = @cmd_id`);
   stmts.deletePendingByDevice = db.prepare(`DELETE FROM device_pending_requests WHERE device_id = @device_id`);
+  stmts.deleteExpiredPending = db.prepare(`DELETE FROM device_pending_requests WHERE created_at IS NOT NULL AND created_at < @cutoff`);
 
   // devices / device_sequences statements
   stmts.insertDevice = db.prepare(`INSERT INTO devices (device_id, serial, name, user_id, metadata, created_at)
@@ -101,7 +188,7 @@ function prepareStatements() {
 
   stmts.getUserById = db.prepare(`SELECT id, username, password_hash, display_name, created_at FROM users WHERE id = @id`);
 
-  stmts.listUsers = db.prepare(`SELECT id, username, password_hash, display_name, created_at FROM users ORDER BY created_at DESC LIMIT @limit OFFSET @offset`);
+  stmts.listUsers = db.prepare(`SELECT id, username, display_name, created_at FROM users ORDER BY created_at DESC LIMIT @limit OFFSET @offset`);
 
   stmts.updateUserByUsername = db.prepare(`UPDATE users SET password_hash = @password_hash, display_name = @display_name WHERE username = @username`);
 
@@ -135,6 +222,9 @@ export async function initDb(options = {}) {
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
     db.pragma('synchronous = NORMAL');
+    db.pragma('foreign_keys = ON');
+    db.pragma('temp_store = MEMORY');
+    db.pragma('cache_size = -20000');
   } catch (err) {
     console.warn('Failed to apply PRAGMA:', err && err.message ? err.message : err);
   }
@@ -152,7 +242,7 @@ export async function initDb(options = {}) {
     console.warn('schema.sql not found at', schemaPath);
   }
 
-  // Migration: ensure device_commands has battery and low_power columns
+  // Migration: ensure device_commands has compatibility/optimization columns and indexes.
   try {
     const cols = db.prepare("PRAGMA table_info('device_commands')").all();
     const colNames = (cols || []).map(c => String(c.name));
@@ -162,6 +252,24 @@ export async function initDb(options = {}) {
     if (!colNames.includes('low_power')) {
       try { db.exec("ALTER TABLE device_commands ADD COLUMN low_power INTEGER"); } catch (e) { console.warn('Failed to add low_power column', e && e.message ? e.message : e); }
     }
+    if (!colNames.includes('created_at')) {
+      try { db.exec("ALTER TABLE device_commands ADD COLUMN created_at INTEGER"); } catch (e) { console.warn('Failed to add created_at column', e && e.message ? e.message : e); }
+    }
+    if (!colNames.includes('updated_at')) {
+      try { db.exec("ALTER TABLE device_commands ADD COLUMN updated_at INTEGER"); } catch (e) { console.warn('Failed to add updated_at column', e && e.message ? e.message : e); }
+    }
+    try {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_cmd_device_status_ts ON device_commands(device_id, status, ts);
+        CREATE INDEX IF NOT EXISTS idx_cmd_device_action_ts ON device_commands(device_id, action, ts);
+        CREATE INDEX IF NOT EXISTS idx_status_device_status_ts ON status(device_id, status, ts);
+        CREATE INDEX IF NOT EXISTS idx_gps_created_at ON gps_points(created_at);
+        CREATE INDEX IF NOT EXISTS idx_device_pending_requests_created ON device_pending_requests(created_at);
+        CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
+        DROP INDEX IF EXISTS idx_devices_device_id;
+        DROP INDEX IF EXISTS idx_device_status_current_device;
+      `);
+    } catch (e) { console.warn('Failed to apply index migration', e && e.message ? e.message : e); }
   } catch (e) {
     console.warn('device_commands migration check failed', e && e.message ? e.message : e);
   }
@@ -181,6 +289,49 @@ export async function initDb(options = {}) {
   }
 
   return db;
+}
+
+function nullableNumber(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function nullableInteger(v) {
+  const n = nullableNumber(v);
+  return n == null ? null : Math.round(n);
+}
+
+function nullableBooleanInt(v) {
+  if (v === undefined || v === null || v === '') return null;
+  if (v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true' || String(v).toLowerCase() === 'yes') return 1;
+  if (v === false || v === 0 || v === '0' || String(v).toLowerCase() === 'false' || String(v).toLowerCase() === 'no') return 0;
+  return v ? 1 : 0;
+}
+
+function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = null, heading = null, altitude = null, accuracy = null, heartRate = null, temperature = null, humidity = null, collision = null, collisionLevel = null, collisionScore = null, battery = null, lowPower = null, source = 'mqtt', rawJson = null, createdAt = null, updatedAt = null } = {}) {
+  return {
+    device_id: String(deviceId),
+    ts: Number(ts),
+    lng: nullableNumber(lng),
+    lat: nullableNumber(lat),
+    speed: nullableNumber(speed),
+    heading: nullableNumber(heading),
+    altitude: nullableNumber(altitude),
+    accuracy: nullableNumber(accuracy),
+    heart_rate: nullableInteger(heartRate),
+    temperature: nullableNumber(temperature),
+    humidity: nullableNumber(humidity),
+    collision: nullableBooleanInt(collision) || 0,
+    collision_level: collisionLevel == null ? null : String(collisionLevel),
+    collision_score: nullableNumber(collisionScore),
+    battery: nullableInteger(battery),
+    low_power: nullableBooleanInt(lowPower),
+    source: source == null ? 'mqtt' : String(source),
+    raw_json: rawJson == null ? null : String(rawJson),
+    created_at: createdAt == null ? Date.now() : Number(createdAt),
+    updated_at: updatedAt == null ? Date.now() : Number(updatedAt)
+  };
 }
 
 /**
@@ -320,6 +471,58 @@ export function getLatestStatus(deviceId) {
   return row || null;
 }
 
+export function insertHelmetTelemetry(payload = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!payload.deviceId || payload.ts == null) throw new Error('Missing required fields: deviceId, ts');
+  const row = normalizeTelemetryRow(payload);
+  const info = stmts.insertHelmetTelemetry.run(row);
+  return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+export function upsertHelmetTelemetryCurrent(payload = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!payload.deviceId || payload.ts == null) throw new Error('Missing required fields: deviceId, ts');
+  const row = normalizeTelemetryRow(payload);
+  const info = stmts.upsertHelmetTelemetryCurrent.run(row);
+  return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+export function getHelmetTelemetry({ deviceId, from = 0, to = Number.MAX_SAFE_INTEGER, limit = 1000 } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  return stmts.getHelmetTelemetry.all({ device_id: String(deviceId), from: Number(from), to: Number(to), limit: Number(limit) });
+}
+
+export function getHelmetTelemetryCurrent(deviceId) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  return stmts.getHelmetTelemetryCurrent.get({ device_id: String(deviceId) }) || null;
+}
+
+export function insertCollisionEvent(payload = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!payload.deviceId || payload.ts == null) throw new Error('Missing required fields: deviceId, ts');
+  const info = stmts.insertCollisionEvent.run({
+    device_id: String(payload.deviceId),
+    ts: Number(payload.ts),
+    level: payload.level == null ? null : String(payload.level),
+    score: nullableNumber(payload.score),
+    lng: nullableNumber(payload.lng),
+    lat: nullableNumber(payload.lat),
+    speed: nullableNumber(payload.speed),
+    message: payload.message == null ? null : String(payload.message),
+    raw_json: payload.rawJson == null ? null : String(payload.rawJson),
+    created_at: payload.createdAt == null ? Date.now() : Number(payload.createdAt)
+  });
+  return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+export function listCollisionEvents({ deviceId, from = 0, to = Number.MAX_SAFE_INTEGER, limit = 100 } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  return stmts.listCollisionEvents.all({ device_id: String(deviceId), from: Number(from), to: Number(to), limit: Number(limit) });
+}
+
 /**
  * Add or update a pending request for a device (one refresh -> one cmdId).
  */
@@ -327,8 +530,17 @@ export function addPendingRequest({ deviceId, cmdId, createdAt = null } = {}) {
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   if (!deviceId || !cmdId) throw new Error('deviceId and cmdId are required.');
   const now = createdAt == null ? Date.now() : Number(createdAt);
+  try { cleanupExpiredPendingRequests(); } catch (e) { console.warn('[DB] cleanupExpiredPendingRequests failed', e && e.message ? e.message : e); }
   const info = stmts.insertPendingRequest.run({ device_id: String(deviceId), cmd_id: String(cmdId), created_at: now });
   return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+}
+
+export function cleanupExpiredPendingRequests({ olderThanMs = 60000, now = null } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  const base = now == null ? Date.now() : Number(now);
+  const cutoff = base - Number(olderThanMs);
+  const info = stmts.deleteExpiredPending.run({ cutoff });
+  return { changes: info.changes, cutoff };
 }
 
 export function getPendingRequestByDevice(deviceId) {
@@ -419,7 +631,8 @@ export function addDeviceCommand({ cmdId, deviceId, ts, type, action, valueJson 
   }
 
   try {
-    const info = stmts.insertCmd.run({ cmd_id: String(cmdId), device_id: String(deviceId), ts: Number(ts), type: String(type), action: String(action), value_json: valueJsonStr, status: 'queued', retries: 0 });
+      const now = Date.now();
+      const info = stmts.insertCmd.run({ cmd_id: String(cmdId), device_id: String(deviceId), ts: Number(ts), type: String(type), action: String(action), value_json: valueJsonStr, status: 'queued', retries: 0, created_at: now, updated_at: now });
     // 增加 device_commands 的设备级序号（容错）
     try {
       const seqRes = incDeviceSequence({ tableName: 'device_commands', deviceId: String(deviceId), delta: 1 });
@@ -471,6 +684,8 @@ export function updateCommandStatus({ cmdId, status, sentTs, ackTs, ackPayload, 
     params.low_power = lp == null ? null : (lp ? 1 : 0);
   }
   if (sets.length === 0) throw new Error('No fields to update provided.');
+  sets.push('updated_at = @updated_at');
+  params.updated_at = Date.now();
   const sql = `UPDATE device_commands SET ${sets.join(', ')} WHERE cmd_id = @cmd_id`;
   const stmt = db.prepare(sql);
   const info = stmt.run(params);
@@ -590,7 +805,7 @@ export function addUser({ username, password, displayName = null, createdAt = nu
   if (!username || !password) throw new Error('username and password are required.');
   const created = createdAt == null ? Date.now() : Number(createdAt);
   try {
-    const info = stmts.insertUser.run({ username: String(username), password_hash: String(password), display_name: displayName == null ? null : String(displayName), created_at: created });
+    const info = stmts.insertUser.run({ username: String(username), password_hash: hashPassword(password), display_name: displayName == null ? null : String(displayName), created_at: created });
     return { lastInsertRowid: info.lastInsertRowid, createdAt: created };
   } catch (err) {
     // UNIQUE 违例 -> 返回 existing=true 并提供已有行（参照 addDeviceCommand 风格）
@@ -635,7 +850,7 @@ export function updateUser(username, updates = {}) {
   if (!updates || Object.keys(updates).length === 0) throw new Error('No fields to update provided.');
   const sets = [];
   const params = { username: String(username) };
-  if (updates.password !== undefined) { sets.push('password_hash = @password_hash'); params.password_hash = updates.password == null ? null : String(updates.password); }
+  if (updates.password !== undefined) { sets.push('password_hash = @password_hash'); params.password_hash = updates.password == null ? null : hashPassword(updates.password); }
   if (updates.displayName !== undefined) { sets.push('display_name = @display_name'); params.display_name = updates.displayName == null ? null : String(updates.displayName); }
   if (sets.length === 0) throw new Error('No fields to update provided.');
   const sql = `UPDATE users SET ${sets.join(', ')} WHERE username = @username`;

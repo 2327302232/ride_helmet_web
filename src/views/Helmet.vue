@@ -36,6 +36,36 @@
           <span class="ps-slider"></span>
         </label>
       </div>
+      <div class="sensor-grid">
+        <div class="sensor-card">
+          <div class="sensor-label">速度</div>
+          <div class="sensor-value">{{ formatValue(sensor.speed, ' km/h') }}</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">GPS</div>
+          <div class="sensor-value sensor-small">{{ formatGps(sensor.lng, sensor.lat) }}</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">心率</div>
+          <div class="sensor-value">{{ formatValue(sensor.heartRate, ' bpm') }}</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">温度</div>
+          <div class="sensor-value">{{ formatValue(sensor.temperature, ' ℃') }}</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">湿度</div>
+          <div class="sensor-value">{{ formatValue(sensor.humidity, ' %') }}</div>
+        </div>
+        <div class="sensor-card" :class="sensor.collision ? 'sensor-alert' : ''">
+          <div class="sensor-label">碰撞检测</div>
+          <div class="sensor-value">{{ sensor.collision ? '异常' : '正常' }}</div>
+          <div v-if="sensor.collisionLevel || sensor.collisionScore != null" class="sensor-extra">
+            {{ sensor.collisionLevel || 'level' }}<span v-if="sensor.collisionScore != null"> / {{ sensor.collisionScore }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="sensor-updated">最近数据：{{ sensor.ts ? formatTs(sensor.ts) : '暂无' }}</div>
       <div class="raw-log-panel">
         <div style="font-size:14px;font-weight:700;margin-bottom:8px;">Raw_Log（页面接收到的数据）</div>
         <pre style="max-height:480px;overflow:auto;background:#fff;border:1px solid #e8e8e8;padding:12px;border-radius:6px;font-size:12px">{{ JSON.stringify(rawLog, null, 2) }}</pre>
@@ -68,6 +98,20 @@ const showDeviceDropdown = ref(false)
 const deviceSelectRef = ref(null)
 const batteryLevel = ref(78)
 const charging = ref(false)
+const sensor = ref({
+  ts: null,
+  lng: null,
+  lat: null,
+  speed: null,
+  heartRate: null,
+  temperature: null,
+  humidity: null,
+  collision: false,
+  collisionLevel: null,
+  collisionScore: null,
+  battery: null,
+  lowPower: null
+})
 const batteryIcon = computed(() => {
   try {
     // If device is offline, show empty icon
@@ -203,6 +247,86 @@ function handleWsMessage(msg) {
       pendingResolvers.delete(cmdId)
       try { fn(p) } catch (e) {}
     }
+  } else if (msg.type === 'telemetry') {
+    const p = msg.payload || null
+    if (p) applyTelemetry(p)
+  }
+}
+
+function formatTs(ts) {
+  if (!ts) return '暂无'
+  const n = Number(ts)
+  if (!Number.isFinite(n)) return String(ts)
+  const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+  return new Date(ms).toLocaleString()
+}
+
+function formatValue(v, unit = '') {
+  if (v === undefined || v === null || v === '') return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  const digits = Math.abs(n) >= 100 ? 0 : 1
+  return `${n.toFixed(digits)}${unit}`
+}
+
+function formatGps(lng, lat) {
+  const x = Number(lng)
+  const y = Number(lat)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return '--'
+  return `${x.toFixed(6)}, ${y.toFixed(6)}`
+}
+
+function normalizeBool(v) {
+  if (v === true || v === 1 || v === '1') return true
+  if (v === false || v === 0 || v === '0') return false
+  if (v == null) return false
+  const s = String(v).toLowerCase()
+  if (s === 'true' || s === 'yes') return true
+  if (s === 'false' || s === 'no') return false
+  return !!v
+}
+
+function applyTelemetry(payload) {
+  if (!payload) return
+  const raw = payload.raw || payload.rawJson || payload
+  const next = {
+    ts: payload.ts ?? raw.ts ?? sensor.value.ts,
+    lng: payload.lng ?? raw.lng ?? raw.lon ?? raw.longitude ?? sensor.value.lng,
+    lat: payload.lat ?? raw.lat ?? raw.latitude ?? sensor.value.lat,
+    speed: payload.speed ?? raw.speed ?? raw.spd ?? sensor.value.speed,
+    heartRate: payload.heartRate ?? payload.heart_rate ?? raw.heart_rate ?? raw.heartRate ?? raw.hr ?? raw.bpm ?? sensor.value.heartRate,
+    temperature: payload.temperature ?? raw.temperature ?? raw.temp ?? raw.t ?? sensor.value.temperature,
+    humidity: payload.humidity ?? raw.humidity ?? raw.hum ?? raw.h ?? sensor.value.humidity,
+    collision: normalizeBool(payload.collision ?? raw.collision ?? raw.crash ?? raw.impact ?? raw.fall),
+    collisionLevel: payload.collisionLevel ?? payload.collision_level ?? raw.collision_level ?? raw.collisionLevel ?? raw.level ?? sensor.value.collisionLevel,
+    collisionScore: payload.collisionScore ?? payload.collision_score ?? raw.collision_score ?? raw.collisionScore ?? raw.impact_score ?? raw.score ?? sensor.value.collisionScore,
+    battery: payload.battery ?? raw.battery ?? raw.bat ?? raw.battery_level ?? raw.batteryLevel ?? sensor.value.battery,
+    lowPower: payload.lowPower ?? payload.low_power ?? raw.low_power ?? raw.lowPower ?? sensor.value.lowPower
+  }
+  sensor.value = next
+  if (next.battery !== undefined && next.battery !== null) {
+    batteryLevel.value = Number(next.battery)
+    try { localStorage.setItem('ride_battery', JSON.stringify(Number(next.battery))) } catch (e) {}
+  }
+  if (next.lowPower !== undefined && next.lowPower !== null) {
+    powerSave.value = normalizeBool(next.lowPower)
+    try { localStorage.setItem('ride_power_save', JSON.stringify(!!powerSave.value)) } catch (e) {}
+  }
+}
+
+async function loadTelemetryCurrent(devId) {
+  if (!devId) { sensor.value = { ...sensor.value, ts: null }; return }
+  try {
+    const url = `${backendBase.replace(/\/$/, '')}/api/devices/${encodeURIComponent(devId)}/telemetry/current`
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json().catch(() => null)
+    if (data && data.telemetry) {
+      applyTelemetry(data.telemetry)
+      try { appendRawLog({ source: 'telemetry_current_fetch', deviceId: devId, data: data.telemetry }) } catch (e) {}
+    }
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -422,6 +546,8 @@ async function onTogglePowerSave(evOrWant) {
 watch(deviceId, (v) => {
   if (refreshingStatus.value) return
   loadDeviceOnlineFromServer(v).catch(() => {})
+  loadTelemetryCurrent(v).catch(() => {})
+  subscribeDevice(v)
 })
 watch(powerSave, (v) => { try { localStorage.setItem('ride_power_save', JSON.stringify(!!v)) } catch (e) {} })
 
@@ -458,6 +584,7 @@ async function loadDevicesList(options = {}) {
   if (!skipOnlineReload && !refreshingStatus.value) {
     try { loadDeviceOnlineFromServer(deviceId.value).catch(() => {}) } catch (e) {}
   }
+  try { loadTelemetryCurrent(deviceId.value).catch(() => {}) } catch (e) {}
 }
 
 async function onRefresh() {
@@ -467,6 +594,7 @@ async function onRefresh() {
   if (deviceId.value) simStatus.value = 'pending'
   try {
     await loadDevicesList({ skipOnlineReload: true })
+    try { await loadTelemetryCurrent(deviceId.value) } catch (e) {}
     if (deviceId.value) simStatus.value = 'pending'
     // 请求后端下发状态请求命令到设备（后端会 publish 到 MQTT），并轮询该次下发的结果
     try {
@@ -605,4 +733,18 @@ onUnmounted(() => {
 .ps-switch input:checked + .ps-slider:before { transform: translateX(22px) }
 .power-save-panel.disabled { opacity: 0.55; pointer-events: none }
 .power-save-panel.disabled .ps-desc { color: #9e9e9e }
+.sensor-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-bottom:8px }
+.sensor-card { background:#fafafa; border:1px solid #eef6ff; border-radius:10px; padding:10px 12px; min-height:68px; box-sizing:border-box; text-align:left }
+.sensor-card.sensor-alert { background:#fff5f5; border-color:#ffcdd2 }
+.sensor-label { color:#666; font-size:13px; font-weight:700; margin-bottom:6px }
+.sensor-value { color:#111; font-size:18px; font-weight:800; line-height:1.25; word-break:keep-all }
+.sensor-small { font-size:13px; user-select:all }
+.sensor-extra { color:#c62828; font-size:12px; margin-top:4px }
+.sensor-updated { color:#888; font-size:12px; text-align:left; margin:0 0 12px 2px }
+@media (max-width: 720px) {
+  .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) {
+  .sensor-grid { grid-template-columns: 1fr; }
+}
 </style>

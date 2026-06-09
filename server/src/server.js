@@ -19,6 +19,7 @@ import trackRouter from './api/track.js';
 import devicesRouter from './api/devices.js';
 import usersRouter from './api/users.js';
 import meRouter from './api/me.js'
+import telemetryRouter from './api/telemetry.js'
 import { WebSocketServer } from 'ws';
 
 let shuttingDown = false;
@@ -72,6 +73,7 @@ async function start() {
       app.use(commandRouter);
       app.use(trackRouter);
       app.use(devicesRouter);
+      app.use(telemetryRouter);
       app.use(meRouter);
       app.use(usersRouter);
 
@@ -143,7 +145,10 @@ async function start() {
     }
 
     // 订阅 MQTT 事件用于运行时日志观察
-    onMqtt('telemetry', (p) => console.log('[MQTT EVENT] telemetry', JSON.stringify(p)));
+    onMqtt('telemetry', (p) => {
+      console.log('[MQTT EVENT] telemetry', JSON.stringify(p));
+      try { if (p && p.deviceId) broadcastToDevice(p.deviceId, { type: 'telemetry', payload: p }); } catch (e) {}
+    });
     onMqtt('cmd_ack', async (payload) => {
       console.log('[MQTT EVENT] cmd_ack', JSON.stringify(payload));
       try {

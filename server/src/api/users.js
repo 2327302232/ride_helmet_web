@@ -1,5 +1,5 @@
 import express from 'express'
-import { addUser, getUserByUsername, listUsers } from '../db.js'
+import { addUser, getUserByUsername, listUsers, updateUser, verifyPassword, isPasswordHash } from '../db.js'
 
 const router = express.Router()
 
@@ -32,7 +32,11 @@ router.post('/api/test/login', async (req, res) => {
     if (!password || typeof password !== 'string') return res.status(400).json({ error: 'password (string) is required' })
     const user = getUserByUsername(username)
     if (!user) return res.status(401).json({ error: 'invalid_credentials' })
-    if (String(password) !== (user.password_hash == null ? '' : String(user.password_hash))) return res.status(401).json({ error: 'invalid_credentials' })
+    if (!verifyPassword(password, user.password_hash)) return res.status(401).json({ error: 'invalid_credentials' })
+    // 兼容旧库：如果历史用户仍是明文密码，登录成功后自动升级为 pbkdf2 hash。
+    if (!isPasswordHash(user.password_hash)) {
+      try { updateUser(username, { password }) } catch (e) { console.warn('password hash upgrade failed', e?.message || e) }
+    }
     return res.status(200).json({ id: user.id, username: user.username, displayName: user.display_name })
   } catch (err) {
     console.error('POST /api/test/login error', err)

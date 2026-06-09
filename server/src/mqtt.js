@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd } from './db.js';
+import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd, insertHelmetTelemetry, upsertHelmetTelemetryCurrent, insertCollisionEvent } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +87,72 @@ function extractBatteryLowPower(payloadObj) {
   return { batteryVal, lowPowerVal };
 }
 
+function firstDefined(...values) {
+  for (const v of values) {
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return null;
+}
+
+function toFiniteNumber(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toBool(v) {
+  if (v === undefined || v === null || v === '') return null;
+  if (v === true || v === 1 || v === '1') return true;
+  if (v === false || v === 0 || v === '0') return false;
+  const s = String(v).toLowerCase();
+  if (s === 'true' || s === 'yes' || s === 'y') return true;
+  if (s === 'false' || s === 'no' || s === 'n') return false;
+  return !!v;
+}
+
+function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt') {
+  const ts = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
+  const lng = toFiniteNumber(firstDefined(payloadObj.lng, payloadObj.lon, payloadObj.long, payloadObj.longitude));
+  const lat = toFiniteNumber(firstDefined(payloadObj.lat, payloadObj.latitude));
+  const speed = toFiniteNumber(firstDefined(payloadObj.speed, payloadObj.spd));
+  const heading = toFiniteNumber(firstDefined(payloadObj.heading, payloadObj.bearing));
+  const altitude = toFiniteNumber(firstDefined(payloadObj.altitude, payloadObj.alt));
+  const accuracy = toFiniteNumber(firstDefined(payloadObj.accuracy, payloadObj.hdop));
+  const heartRate = toFiniteNumber(firstDefined(payloadObj.heart_rate, payloadObj.heartRate, payloadObj.hr, payloadObj.bpm));
+  const temperature = toFiniteNumber(firstDefined(payloadObj.temperature, payloadObj.temp, payloadObj.t));
+  const humidity = toFiniteNumber(firstDefined(payloadObj.humidity, payloadObj.hum, payloadObj.h));
+  const collisionRaw = firstDefined(payloadObj.collision, payloadObj.crash, payloadObj.impact, payloadObj.fall);
+  const collisionScore = toFiniteNumber(firstDefined(payloadObj.collision_score, payloadObj.collisionScore, payloadObj.impact_score, payloadObj.impactScore, payloadObj.score));
+  const collision = toBool(collisionRaw) === true || (collisionScore != null && collisionScore > 0);
+  const collisionLevel = firstDefined(payloadObj.collision_level, payloadObj.collisionLevel, payloadObj.impact_level, payloadObj.impactLevel, payloadObj.level);
+  const battery = toFiniteNumber(firstDefined(payloadObj.battery, payloadObj.bat, payloadObj.battery_level, payloadObj.batteryLevel));
+  const lowPowerRaw = firstDefined(payloadObj.low_power, payloadObj.lowPower, payloadObj.lowPowerMode);
+  const lowPower = toBool(lowPowerRaw);
+
+  return {
+    deviceId,
+    ts,
+    lng,
+    lat,
+    speed,
+    heading,
+    altitude,
+    accuracy,
+    heartRate,
+    temperature,
+    humidity,
+    collision,
+    collisionLevel,
+    collisionScore,
+    battery,
+    lowPower,
+    source,
+    rawJson: JSON.stringify(payloadObj),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+}
+
 function clearAckTimer(cmdId) {
   try {
     const t = ackTimers.get(cmdId);
@@ -139,11 +205,38 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
     return;
   }
 
-  const ts = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
-  const lng = Number(payloadObj.lng ?? payloadObj.lon ?? payloadObj.long ?? null);
-  const lat = Number(payloadObj.lat ?? null);
+  const telemetry = normalizeTelemetryPayload(deviceId, payloadObj, 'mqtt');
+  const ts = telemetry.ts;
+  const lng = telemetry.lng;
+  const lat = telemetry.lat;
 
   const hasCoords = Number.isFinite(lng) && Number.isFinite(lat);
+
+  try {
+    insertHelmetTelemetry(telemetry);
+    upsertHelmetTelemetryCurrent(telemetry);
+  } catch (err) {
+    emitter.emit('error', { error: err, context: { where: 'insert helmet telemetry', deviceId, topic } });
+  }
+
+  if (telemetry.collision) {
+    try {
+      insertCollisionEvent({
+        deviceId,
+        ts,
+        level: telemetry.collisionLevel,
+        score: telemetry.collisionScore,
+        lng,
+        lat,
+        speed: telemetry.speed,
+        message: payloadObj.message ?? 'collision detected',
+        rawJson: JSON.stringify(payloadObj),
+        createdAt: Date.now()
+      });
+    } catch (err) {
+      emitter.emit('error', { error: err, context: { where: 'insert collision event', deviceId, topic } });
+    }
+  }
 
   if (hasCoords) {
     try {
@@ -152,17 +245,17 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
         ts,
         lng,
         lat,
-        speed: payloadObj.speed ?? payloadObj.spd ?? null,
-        heading: payloadObj.heading ?? payloadObj.bearing ?? null,
-        altitude: payloadObj.alt ?? null,
-        accuracy: payloadObj.accuracy ?? payloadObj.hdop ?? null,
-        battery: payloadObj.battery ?? null,
+        speed: telemetry.speed,
+        heading: telemetry.heading,
+        altitude: telemetry.altitude,
+        accuracy: telemetry.accuracy,
+        battery: telemetry.battery,
         status: payloadObj.status ?? 'ok',
         source: 'mqtt',
         rawJson: JSON.stringify(payloadObj),
         createdAt: Date.now()
       });
-      emitter.emit('telemetry', { deviceId, ts, lng, lat, speed: payloadObj.speed ?? null, battery: payloadObj.battery ?? null, raw: payloadObj });
+      emitter.emit('telemetry', { ...telemetry, raw: payloadObj });
       return insertRes;
     } catch (err) {
       emitter.emit('error', { error: err, context: { deviceId, topic } });
@@ -170,14 +263,7 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
     }
   }
 
-  // 没有坐标，但可能包含状态信息（battery/status 等），上报实时状态以便前端显示
-  if (payloadObj.battery !== undefined || payloadObj.status !== undefined) {
-    emitter.emit('telemetry', { deviceId, ts, battery: payloadObj.battery ?? null, raw: payloadObj });
-    return;
-  }
-
-  // 其它 telemetry，直接 emit raw
-  emitter.emit('telemetry', { deviceId, ts, raw: payloadObj });
+  emitter.emit('telemetry', { ...telemetry, raw: payloadObj });
 }
 
 async function handleEvent(deviceId, eventType, payloadObj, topic) {
