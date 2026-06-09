@@ -61,6 +61,7 @@ const loading = ref(false)
 const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const simStatus = ref('unknown') // 'online'|'offline'|'unknown'|'all'
 const commandBasis = ref(null)
+const refreshingStatus = ref(false)
 const powerSave = ref(false)
 const powerSaveLoading = ref(false)
 const showDeviceDropdown = ref(false)
@@ -328,7 +329,8 @@ async function loadDeviceOnlineFromServer(devId) {
   simStatus.value = 'unknown'
 }
 
-async function loadCommandBasis(devId) {
+async function loadCommandBasis(devId, options = {}) {
+  const applyStatus = options.applyStatus !== false
   commandBasis.value = null
   if (!devId) return
   try {
@@ -344,10 +346,12 @@ async function loadCommandBasis(devId) {
       if (commandBasis.value.length > 0) {
         const latest = commandBasis.value[0]
         const s = latest.status
-        if (s === 'acked') simStatus.value = 'online'
-        else if (s === 'failed' || s === 'expired') simStatus.value = 'offline'
-        else if (s === 'sent' || s === 'queued') simStatus.value = 'pending'
-        else simStatus.value = 'unknown'
+        if (applyStatus) {
+          if (s === 'acked') simStatus.value = 'online'
+          else if (s === 'failed' || s === 'expired') simStatus.value = 'offline'
+          else if (s === 'sent' || s === 'queued') simStatus.value = 'pending'
+          else simStatus.value = 'unknown'
+        }
         // read battery and low power state from latest command if available
         try {
           if (latest.battery !== undefined && latest.battery !== null) {
@@ -415,10 +419,14 @@ async function onTogglePowerSave(evOrWant) {
   }
 }
 
-watch(deviceId, (v) => { loadDeviceOnlineFromServer(v).catch(() => {}) })
+watch(deviceId, (v) => {
+  if (refreshingStatus.value) return
+  loadDeviceOnlineFromServer(v).catch(() => {})
+})
 watch(powerSave, (v) => { try { localStorage.setItem('ride_power_save', JSON.stringify(!!v)) } catch (e) {} })
 
-async function loadDevicesList() {
+async function loadDevicesList(options = {}) {
+  const skipOnlineReload = !!options.skipOnlineReload
   try {
       const url = `${backendBase.replace(/\/$/, '')}/api/devices`
       const res = await fetch(url)
@@ -447,13 +455,19 @@ async function loadDevicesList() {
     devicesList.value = []
   }
   // load current device online state after devices list updated
-  try { loadDeviceOnlineFromServer(deviceId.value).catch(() => {}) } catch (e) {}
+  if (!skipOnlineReload && !refreshingStatus.value) {
+    try { loadDeviceOnlineFromServer(deviceId.value).catch(() => {}) } catch (e) {}
+  }
 }
 
 async function onRefresh() {
   loading.value = true
+  refreshingStatus.value = true
+  // 用户点击刷新后立即进入“连接中”，直到本次请求收到回复或超时判定离线。
+  if (deviceId.value) simStatus.value = 'pending'
   try {
-    await loadDevicesList()
+    await loadDevicesList({ skipOnlineReload: true })
+    if (deviceId.value) simStatus.value = 'pending'
     // 请求后端下发状态请求命令到设备（后端会 publish 到 MQTT），并轮询该次下发的结果
     try {
       if (deviceId.value) {
@@ -494,8 +508,10 @@ async function onRefresh() {
       console.warn('request_status error', e)
     }
       // 更新判定依据显示
-      try { await loadCommandBasis(deviceId.value) } catch (e) {}
+      // 注意：刷新期间不要再用 commandBasis 覆盖当前 online/offline/pending 判定，避免刚置为在线后被旧记录改回 pending/offline。
+      try { await loadCommandBasis(deviceId.value, { applyStatus: false }) } catch (e) {}
     } finally {
+    refreshingStatus.value = false
     loading.value = false
   }
 }

@@ -529,6 +529,8 @@ export function publishCommand({ deviceId, cmdId = null, type, action, value } =
         const t = setTimeout(() => {
           try {
             if (!ackTimers.has(finalCmdId)) return;
+            // 如果真实 ACK/status 与超时几乎同时到达，真实回复路径会先 clearAckTimer。
+            // 这里再次确认 timer 仍存在后才标记 expired，避免后续超时覆盖真实在线状态。
             updateCommandStatus({ cmdId: finalCmdId, status: 'expired' });
           } catch (e) { emitter.emit('error', { error: e, context: { cmdId: finalCmdId } }); }
           ackTimers.delete(finalCmdId);
