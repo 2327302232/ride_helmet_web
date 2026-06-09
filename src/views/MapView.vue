@@ -61,6 +61,43 @@ let trackService = null
 const trackReady = ref(false)
 let segmentMarkers = []
 
+async function getLocationDiagnostics(extra = {}) {
+  const info = {
+    href: '',
+    origin: '',
+    protocol: '',
+    hostname: '',
+    isSecureContext: false,
+    hasNavigatorGeolocation: false,
+    permissionsApi: false,
+    geolocationPermission: 'unknown',
+    userAgent: '',
+    ...extra
+  }
+  try {
+    info.href = window.location.href
+    info.origin = window.location.origin
+    info.protocol = window.location.protocol
+    info.hostname = window.location.hostname
+    info.isSecureContext = !!window.isSecureContext
+    info.userAgent = navigator.userAgent || ''
+    info.hasNavigatorGeolocation = !!(navigator && navigator.geolocation)
+    info.permissionsApi = !!(navigator && navigator.permissions && navigator.permissions.query)
+    if (info.permissionsApi) {
+      try {
+        const perm = await navigator.permissions.query({ name: 'geolocation' })
+        info.geolocationPermission = perm && perm.state ? perm.state : 'unknown'
+      } catch (e) {
+        info.geolocationPermission = 'query_failed: ' + (e?.message || String(e))
+      }
+    }
+  } catch (e) {
+    info.diagnosticsError = e?.message || String(e)
+  }
+  console.warn('[geo diagnostics]', info)
+  return info
+}
+
 function getGeoErrorCode(err) {
   try {
     if (!err) return null
@@ -95,6 +132,25 @@ function buildLocationHelpMessage(err) {
     return `浏览器定位通常要求 HTTPS 安全环境。请使用 https 地址访问后重试。原始信息：${msg || 'unknown'}`
   }
   return msg || '定位失败，请检查浏览器定位权限、系统定位服务和网络。'
+}
+
+function formatLocationDiagnostics(diag) {
+  try {
+    if (!diag) return ''
+    return [
+      `href: ${diag.href}`,
+      `isSecureContext: ${diag.isSecureContext}`,
+      `navigator.geolocation: ${diag.hasNavigatorGeolocation}`,
+      `permissions.geolocation: ${diag.geolocationPermission}`,
+      `protocol: ${diag.protocol}`,
+      `hostname: ${diag.hostname}`,
+      `errorCode: ${diag.errorCode}`,
+      `errorMessage: ${diag.errorMessage}`,
+      `userAgent: ${diag.userAgent}`
+    ].join('\n')
+  } catch (e) {
+    return JSON.stringify(diag)
+  }
 }
 
 function _clearSegmentMarkers() {
@@ -289,10 +345,15 @@ async function locate() {
       // allow user to retry
       isLocating.value = false
       const denied = isPermissionDeniedGeoError(e)
+      const diagnostics = await getLocationDiagnostics({
+        stage: 'navigator.geolocation fallback',
+        errorCode: getGeoErrorCode(e),
+        errorMessage: getGeoErrorMessage(e)
+      })
       const res = await showMessage({
         title: denied ? '定位权限被拒绝' : '定位失败',
         message: buildLocationHelpMessage(e),
-        details: JSON.stringify(e),
+        details: formatLocationDiagnostics(diagnostics),
         type: 'error',
         showCancel: true,
         confirmText: '重试',
@@ -305,10 +366,15 @@ async function locate() {
     console.error('locate error', err)
     isLocating.value = false
     const denied = isPermissionDeniedGeoError(err)
+    const diagnostics = await getLocationDiagnostics({
+      stage: 'locate outer catch',
+      errorCode: getGeoErrorCode(err),
+      errorMessage: getGeoErrorMessage(err)
+    })
     const res = await showMessage({
       title: denied ? '定位权限被拒绝' : '定位异常',
       message: buildLocationHelpMessage(err),
-      details: JSON.stringify(err),
+      details: formatLocationDiagnostics(diagnostics),
       type: 'error',
       showCancel: true,
       confirmText: '重试',
