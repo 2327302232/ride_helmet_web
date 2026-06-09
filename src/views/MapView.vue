@@ -61,6 +61,42 @@ let trackService = null
 const trackReady = ref(false)
 let segmentMarkers = []
 
+function getGeoErrorCode(err) {
+  try {
+    if (!err) return null
+    if (err.code != null) return Number(err.code)
+    if (err.result && err.result.code != null) return Number(err.result.code)
+  } catch (e) {}
+  return null
+}
+
+function getGeoErrorMessage(err) {
+  try {
+    if (!err) return ''
+    return err.message || err.info || err.details || (err.result && (err.result.message || err.result.info)) || String(err)
+  } catch (e) {
+    return String(err)
+  }
+}
+
+function isPermissionDeniedGeoError(err) {
+  const code = getGeoErrorCode(err)
+  const msg = getGeoErrorMessage(err)
+  return code === 1 || /denied|permission|User denied|用户拒绝|拒绝/i.test(msg)
+}
+
+function buildLocationHelpMessage(err) {
+  const origin = location && location.origin ? location.origin : '当前网站'
+  const msg = getGeoErrorMessage(err)
+  if (isPermissionDeniedGeoError(err)) {
+    return `浏览器拒绝了 ${origin} 的定位权限。请点击地址栏左侧的锁/网站设置，把“位置信息/定位”改为“允许”，然后刷新页面或点击重试。原始信息：${msg || 'User denied Geolocation'}`
+  }
+  if (location && location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    return `浏览器定位通常要求 HTTPS 安全环境。请使用 https 地址访问后重试。原始信息：${msg || 'unknown'}`
+  }
+  return msg || '定位失败，请检查浏览器定位权限、系统定位服务和网络。'
+}
+
 function _clearSegmentMarkers() {
   try {
     if (Array.isArray(segmentMarkers) && segmentMarkers.length) {
@@ -252,9 +288,10 @@ async function locate() {
       console.warn('定位回退失败', e)
       // allow user to retry
       isLocating.value = false
+      const denied = isPermissionDeniedGeoError(e)
       const res = await showMessage({
-        title: '定位失败',
-        message: '浏览器定位回退失败：' + (e?.message || String(e)),
+        title: denied ? '定位权限被拒绝' : '定位失败',
+        message: buildLocationHelpMessage(e),
         details: JSON.stringify(e),
         type: 'error',
         showCancel: true,
@@ -267,9 +304,10 @@ async function locate() {
   } catch (err) {
     console.error('locate error', err)
     isLocating.value = false
+    const denied = isPermissionDeniedGeoError(err)
     const res = await showMessage({
-      title: '定位异常',
-      message: err?.message || String(err),
+      title: denied ? '定位权限被拒绝' : '定位异常',
+      message: buildLocationHelpMessage(err),
       details: JSON.stringify(err),
       type: 'error',
       showCancel: true,
