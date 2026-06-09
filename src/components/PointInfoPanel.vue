@@ -20,7 +20,13 @@
         <div v-if="options.data">
           <div class="pip-row"><strong>经纬度：</strong><span>{{ displayFields.latlng }}</span></div>
           <div class="pip-row"><strong>时间：</strong><span>{{ displayFields.time }}</span></div>
+          <div class="pip-row"><strong>速度：</strong><span>{{ displayFields.speed }}</span></div>
+          <div class="pip-row"><strong>心率：</strong><span>{{ displayFields.heartRate }}</span></div>
+          <div class="pip-row"><strong>温度：</strong><span>{{ displayFields.temperature }}</span></div>
+          <div class="pip-row"><strong>湿度：</strong><span>{{ displayFields.humidity }}</span></div>
           <div class="pip-row"><strong>电量：</strong><span>{{ displayFields.battery }}</span></div>
+          <div class="pip-row"><strong>省电模式：</strong><span>{{ displayFields.lowPower }}</span></div>
+          <div class="pip-row" :class="{ 'pip-alert': displayFields.collisionAlert }"><strong>碰撞检测：</strong><span>{{ displayFields.collision }}</span></div>
         </div>
         <div v-else class="pip-placeholder">点信息将在此显示。</div>
       </slot>
@@ -198,15 +204,64 @@ function _normalizeTs(raw) {
   return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
 }
 
+function _firstValue(...values) {
+  for (const v of values) {
+    if (v !== undefined && v !== null && v !== '') return v
+  }
+  return null
+}
+
+function _formatNumber(raw, unit = '', digits = 1) {
+  const v = _firstValue(raw)
+  if (v === null) return '—'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  return `${n.toFixed(digits)}${unit}`
+}
+
+function _formatBool(raw, trueText = '开启', falseText = '关闭') {
+  const v = _firstValue(raw)
+  if (v === null) return '—'
+  if (v === true || v === 1 || v === '1') return trueText
+  if (v === false || v === 0 || v === '0') return falseText
+  const s = String(v).toLowerCase()
+  if (s === 'true' || s === 'yes' || s === 'on') return trueText
+  if (s === 'false' || s === 'no' || s === 'off') return falseText
+  return v ? trueText : falseText
+}
+
+function _isTruthy(raw) {
+  const v = _firstValue(raw)
+  if (v === null) return false
+  if (v === true || v === 1 || v === '1') return true
+  if (v === false || v === 0 || v === '0') return false
+  const s = String(v).toLowerCase()
+  if (s === 'true' || s === 'yes' || s === 'on') return true
+  if (s === 'false' || s === 'no' || s === 'off') return false
+  return !!v
+}
+
 const displayFields = computed(() => {
   const d = options.data
-  if (!d) return { latlng: '—', time: '—', battery: '—' }
+  if (!d) return { latlng: '—', time: '—', speed: '—', heartRate: '—', temperature: '—', humidity: '—', battery: '—', lowPower: '—', collision: '—', collisionAlert: false }
   const ts = _normalizeTs(d.ts)
   const time = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '—'
   const lng = Number(d.lng); const lat = Number(d.lat)
   const latlng = (Number.isFinite(lng) && Number.isFinite(lat)) ? `${lng.toFixed(6)}, ${lat.toFixed(6)}` : '—'
-  const battery = (d.battery == null || d.battery === '') ? '—' : (Number.isFinite(Number(d.battery)) ? `${Number(d.battery)}%` : String(d.battery))
-  return { latlng, time, battery }
+  const speed = _formatNumber(_firstValue(d.speed, d.spd), ' km/h', 1)
+  const heartRate = _formatNumber(_firstValue(d.heartRate, d.heart_rate, d.hr, d.bpm), ' bpm', 0)
+  const temperature = _formatNumber(_firstValue(d.temperature, d.temp, d.t), ' ℃', 1)
+  const humidity = _formatNumber(_firstValue(d.humidity, d.hum, d.h), ' %', 1)
+  const batteryRaw = _firstValue(d.battery, d.bat, d.battery_level, d.batteryLevel)
+  const battery = batteryRaw == null ? '—' : (Number.isFinite(Number(batteryRaw)) ? `${Number(batteryRaw)}%` : String(batteryRaw))
+  const lowPower = _formatBool(_firstValue(d.lowPower, d.low_power, d.lowPowerMode), '开启', '关闭')
+  const collisionAlert = _isTruthy(_firstValue(d.collision, d.crash, d.impact, d.fall))
+  const collisionLevel = _firstValue(d.collisionLevel, d.collision_level, d.impactLevel, d.impact_level, d.level)
+  const collisionScore = _firstValue(d.collisionScore, d.collision_score, d.impactScore, d.impact_score, d.score)
+  const collision = collisionAlert
+    ? `异常${collisionLevel ? ' ' + collisionLevel : ''}${collisionScore != null ? ' / ' + collisionScore : ''}`
+    : '正常'
+  return { latlng, time, speed, heartRate, temperature, humidity, battery, lowPower, collision, collisionAlert }
 })
 </script>
 
@@ -251,6 +306,8 @@ const displayFields = computed(() => {
 .pip-placeholder { color:#888; }
 .pip-row { display:flex; gap:8px; padding:6px 0; align-items:center; }
 .pip-row strong { width:88px; color:#444; font-weight:600; }
+.pip-row span { flex:1; min-width:0; word-break:break-word; }
+.pip-alert strong, .pip-alert span { color:#c62828; font-weight:700; }
 .pip-btn[disabled] { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 @media (max-width:480px) {
   .pip-container { height: 40vh; }

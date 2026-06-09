@@ -71,8 +71,35 @@ function prepareStatements() {
 
   stmts.listDevices = db.prepare(`SELECT device_id AS deviceId, MAX(ts) AS lastTs FROM gps_points GROUP BY device_id ORDER BY lastTs DESC LIMIT @limit`);
 
-  stmts.getTrack = db.prepare(`SELECT ts, lng, lat, speed, battery, status FROM gps_points
+  stmts.getTrackGps = db.prepare(`SELECT ts, lng, lat, speed, battery, status FROM gps_points
     WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
+
+  stmts.getTrackHelmet = db.prepare(`SELECT
+      ts,
+      lng,
+      lat,
+      speed,
+      heading,
+      altitude,
+      accuracy,
+      heart_rate AS heartRate,
+      temperature,
+      humidity,
+      collision,
+      collision_level AS collisionLevel,
+      collision_score AS collisionScore,
+      battery,
+      low_power AS lowPower,
+      source,
+      raw_json AS rawJson
+    FROM helmet_telemetry
+    WHERE device_id = @device_id
+      AND lng IS NOT NULL
+      AND lat IS NOT NULL
+      AND ts >= @from
+      AND ts <= @to
+    ORDER BY ts ASC
+    LIMIT @limit`);
 
   stmts.insertCmd = db.prepare(`INSERT INTO device_commands (cmd_id, device_id, ts, type, action, value_json, status, retries, created_at, updated_at)
     VALUES (@cmd_id, @device_id, @ts, @type, @action, @value_json, @status, @retries, @created_at, @updated_at)`);
@@ -595,7 +622,18 @@ export function listDevices({ limit = 100 } = {}) {
 export function getTrack({ deviceId, from = 0, to = Number.MAX_SAFE_INTEGER, limit = 5000 } = {}) {
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   if (!deviceId) throw new Error('deviceId is required.');
-  const rows = stmts.getTrack.all({ device_id: String(deviceId), from: Number(from), to: Number(to), limit: Number(limit) });
+  const params = { device_id: String(deviceId), from: Number(from), to: Number(to), limit: Number(limit) };
+  // Map 页面需要每个轨迹点携带头盔传感器数据；优先读取 helmet_telemetry。
+  // 若没有新表数据，则 fallback 到旧 gps_points，保证历史轨迹仍可显示。
+  const helmetRows = stmts.getTrackHelmet.all(params);
+  if (helmetRows && helmetRows.length > 0) {
+    return helmetRows.map((row) => ({
+      ...row,
+      collision: !!row.collision,
+      lowPower: row.lowPower == null ? null : !!row.lowPower
+    }));
+  }
+  const rows = stmts.getTrackGps.all(params);
   return rows;
 }
 

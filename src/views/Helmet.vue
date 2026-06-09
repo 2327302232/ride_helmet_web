@@ -26,13 +26,13 @@
           <div class="battery-text">{{ simStatus === 'offline' ? 'unknown' : (batteryLevel + '%') }}</div>
         </div>
       </div>
-      <div class="power-save-panel" :class="{disabled: simStatus === 'offline'}">
+      <div class="power-save-panel" :class="{disabled: powerSaveUnavailable}">
         <div class="ps-left">
           <span class="ps-label">省电模式</span>
-          <span class="ps-desc">{{ simStatus === 'offline' ? '不可用（设备离线）' : (powerSave ? '已启用' : '未启用') }}</span>
+          <span class="ps-desc">{{ powerSaveDesc }}</span>
         </div>
         <label class="ps-switch">
-          <input type="checkbox" :checked="powerSave" @click.prevent="onTogglePowerSave" :disabled="powerSaveLoading || loading || simStatus === 'offline'" />
+          <input type="checkbox" :checked="powerSave" @click.prevent="onTogglePowerSave" :disabled="powerSaveUnavailable || powerSaveLoading || loading" />
           <span class="ps-slider"></span>
         </label>
       </div>
@@ -56,13 +56,6 @@
         <div class="sensor-card">
           <div class="sensor-label">湿度</div>
           <div class="sensor-value">{{ formatValue(sensor.humidity, ' %') }}</div>
-        </div>
-        <div class="sensor-card" :class="sensor.collision ? 'sensor-alert' : ''">
-          <div class="sensor-label">碰撞检测</div>
-          <div class="sensor-value">{{ sensor.collision ? '异常' : '正常' }}</div>
-          <div v-if="sensor.collisionLevel || sensor.collisionScore != null" class="sensor-extra">
-            {{ sensor.collisionLevel || 'level' }}<span v-if="sensor.collisionScore != null"> / {{ sensor.collisionScore }}</span>
-          </div>
         </div>
       </div>
       <div class="sensor-updated">最近数据：{{ sensor.ts ? formatTs(sensor.ts) : '暂无' }}</div>
@@ -111,6 +104,14 @@ const sensor = ref({
   collisionScore: null,
   battery: null,
   lowPower: null
+})
+
+const powerSaveUnavailable = computed(() => simStatus.value !== 'online')
+const powerSaveDesc = computed(() => {
+  if (simStatus.value === 'offline') return '不可用（设备离线）'
+  if (simStatus.value === 'pending') return '不可用（正在连接）'
+  if (simStatus.value === 'unknown' || !simStatus.value) return '不可用（设备状态未知）'
+  return powerSave.value ? '已启用' : '未启用'
 })
 const batteryIcon = computed(() => {
   try {
@@ -286,6 +287,23 @@ function normalizeBool(v) {
   return !!v
 }
 
+function readLowPower(payload) {
+  if (!payload) return undefined
+  const raw = payload.raw || payload.payload || payload
+  const candidates = [
+    payload.low_power, payload.lowPower,
+    raw && raw.low_power, raw && raw.lowPower,
+    raw && raw.value && raw.value.low_power,
+    raw && raw.value && raw.value.lowPower,
+    payload.cmd && payload.cmd.lowPower,
+    payload.cmd && payload.cmd.low_power
+  ]
+  for (const v of candidates) {
+    if (v !== undefined && v !== null) return normalizeBool(v)
+  }
+  return undefined
+}
+
 function applyTelemetry(payload) {
   if (!payload) return
   const raw = payload.raw || payload.rawJson || payload
@@ -354,8 +372,9 @@ function applyReplyState(reply) {
   try {
     const lp = raw.low_power ?? raw.lowPower ?? reply.low_power ?? reply.lowPower
     if (lp !== undefined && lp !== null) {
-      powerSave.value = !!lp
-      try { localStorage.setItem('ride_power_save', JSON.stringify(!!lp)) } catch (e) {}
+      const normalized = normalizeBool(lp)
+      powerSave.value = normalized
+      try { localStorage.setItem('ride_power_save', JSON.stringify(normalized)) } catch (e) {}
     }
   } catch (e) {}
 
@@ -384,6 +403,7 @@ async function waitForCmdReplyWithFallback(devId, cmdId, timeout = 3000) {
     try { appendRawLog({ source: 'result_fetch_after_ws_timeout', deviceId: devId, cmdId, data: result }) } catch (err) {}
     if (result) {
       if (result.ackPayload) return result.ackPayload
+      if (result.cmd && result.cmd.lowPower !== null && result.cmd.lowPower !== undefined) return { ok: result.cmd.status === 'acked', low_power: !!result.cmd.lowPower, raw: result.cmd }
       if (result.onlineFromStatus !== null && result.onlineFromStatus !== undefined) return { online: !!result.onlineFromStatus, raw: result }
       if (result.cmd && result.cmd.status === 'acked') return { ok: true, raw: result.cmd }
     }
@@ -485,8 +505,9 @@ async function loadCommandBasis(devId, options = {}) {
         } catch (e) {}
         try {
           if (latest.lowPower !== undefined && latest.lowPower !== null) {
-            powerSave.value = !!latest.lowPower
-            try { localStorage.setItem('ride_power_save', JSON.stringify(!!latest.lowPower)) } catch (e) {}
+            const normalized = normalizeBool(latest.lowPower)
+            powerSave.value = normalized
+            try { localStorage.setItem('ride_power_save', JSON.stringify(normalized)) } catch (e) {}
           }
         } catch (e) {}
       }
@@ -510,6 +531,7 @@ async function sendLowPowerCommand(enable) {
 // We use click.prevent on the input so the browser won't flip the checkbox
 // and we can control visual state explicitly. evOrWant can be an Event or a boolean.
 async function onTogglePowerSave(evOrWant) {
+  if (powerSaveUnavailable.value || loading.value || powerSaveLoading.value) return
   const want = typeof evOrWant === 'boolean' ? evOrWant : !powerSave.value
   const prev = powerSave.value
   // keep visual state unchanged until confirmation; show loading
@@ -522,13 +544,12 @@ async function onTogglePowerSave(evOrWant) {
     const reply = await waitForCmdReply(cmdId, 3000).catch(() => null)
     try { appendRawLog({ source: 'low_power_reply', deviceId: deviceId.value, cmdId, data: reply }) } catch (e) {}
     if (reply) {
-      const ok = reply.ok === true || (reply.payload && reply.payload.ok === true) || (reply.raw && reply.raw.ok === true)
-      const lp = (reply.low_power ?? (reply.payload && reply.payload.low_power) ?? (reply.raw && reply.raw.low_power))
-      if (ok || (lp !== undefined && String(lp) === String(want))) {
+      const confirmedLowPower = readLowPower(reply)
+      if (confirmedLowPower === want) {
         powerSave.value = want
         try { localStorage.setItem('ride_power_save', JSON.stringify(!!powerSave.value)) } catch (e) {}
       } else {
-        // revert to prev (visual will follow reactive state)
+        try { appendRawLog({ source: 'low_power_not_confirmed', deviceId: deviceId.value, cmdId, want, confirmedLowPower, data: reply }) } catch (e) {}
         powerSave.value = prev
       }
     } else {
