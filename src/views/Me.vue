@@ -16,8 +16,8 @@
         </div>
 
         <div v-if="mode==='login'" class="auth-form">
-          <label class="field">账号： <input v-model="loginForm.username" placeholder="账号" /></label>
-          <label class="field">密码： <input v-model="loginForm.password" type="password" placeholder="密码" /></label>
+          <label class="field"><span class="field-label">账号：</span><input v-model="loginForm.username" placeholder="账号" /></label>
+          <label class="field"><span class="field-label">密码：</span><input v-model="loginForm.password" type="password" placeholder="密码" /></label>
           <div class="actions">
             <button class="log-btn" @click="login" :disabled="isLoading">登录</button>
           </div>
@@ -25,9 +25,9 @@
         </div>
 
         <div v-else class="auth-form">
-          <label class="field">账号： <input v-model="regForm.username" placeholder="账号" /></label>
-          <label class="field">密码： <input v-model="regForm.password" type="password" placeholder="密码" /></label>
-          <label class="field">用户名： <input v-model="regForm.displayName" placeholder="用户名 (可选)" /></label>
+          <label class="field"><span class="field-label">账号：</span><input v-model="regForm.username" placeholder="账号" /></label>
+          <label class="field"><span class="field-label">密码：</span><input v-model="regForm.password" type="password" placeholder="密码" /></label>
+          <label class="field"><span class="field-label">用户名：</span><input v-model="regForm.displayName" placeholder="用户名 (可选)" /></label>
           <div class="actions">
             <button class="log-btn" @click="register" :disabled="isLoading">注册</button>
           </div>
@@ -67,9 +67,9 @@
       <div v-if="editingDevice" class="edit-modal" @click.self="closeEdit">
         <div class="card edit-card">
           <h3>编辑设备</h3>
-          <label class="field">设备 ID（不可修改）： <input v-model="editingForm.deviceId" disabled /></label>
-          <label class="field">设备名称： <input v-model="editingForm.name" /></label>
-          <label class="field">序列号： <input v-model="editingForm.serial" /></label>
+          <label class="field"><span class="field-label">设备 ID（不可修改）：</span><input v-model="editingForm.deviceId" disabled /></label>
+          <label class="field"><span class="field-label">设备名称：</span><input v-model="editingForm.name" /></label>
+          <label class="field"><span class="field-label">序列号：</span><input v-model="editingForm.serial" /></label>
           <div class="actions">
             <button class="log-btn" @click="saveEditDevice" :disabled="isLoading">保存</button>
             <button class="log-btn cancel" @click="closeEdit">取消</button>
@@ -81,9 +81,9 @@
 
       <div class="card">
         <h3>添加设备</h3>
-        <label class="field">设备 ID： <input v-model="deviceForm.deviceId" placeholder="例如 dev-001" /></label>
-        <label class="field">设备名称： <input v-model="deviceForm.name" placeholder="可选" /></label>
-        <label class="field">序列号： <input v-model="deviceForm.serial" placeholder="可选" /></label>
+        <label class="field"><span class="field-label">设备 ID：</span><input v-model="deviceForm.deviceId" placeholder="例如 dev-001" /></label>
+        <label class="field"><span class="field-label">设备名称：</span><input v-model="deviceForm.name" placeholder="可选" /></label>
+        <label class="field"><span class="field-label">序列号：</span><input v-model="deviceForm.serial" placeholder="可选" /></label>
         <div class="actions">
           <button class="log-btn" @click="addDevice" :disabled="isLoading">添加设备</button>
         </div>
@@ -321,9 +321,10 @@ async function deleteDevice(d, opts = {}) {
 .auth-tabs button { padding:8px 12px; border-radius:8px; border:1px solid #bcdffb; background:#fff }
 .auth-tabs button.active { background:#2196f3; color:#fff; border-color:#1976d2 }
 .auth-form .field, .card .field { display:flex; align-items:center; gap:8px; margin:8px 0 }
+.field-label { flex: 0 0 auto; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; line-height: 1.4 }
 .field input { padding:8px 10px; border-radius:6px; border:1px solid #bcdffb; width:320px; max-width:100%; box-sizing:border-box }
 .actions { margin-top:8px }
-.log-btn { background: #2196f3; color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 15px; font-weight: 500; cursor: pointer; box-shadow: 0 2px 8px rgba(33,150,243,0.08); transition: background 0.2s }
+.log-btn { background: #2196f3; color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 15px; font-weight: 500; cursor: pointer; box-shadow: 0 2px 8px rgba(33,150,243,0.08); transition: background 0.2s; white-space: nowrap; word-break: keep-all }
 .log-btn:hover { background: #1976d2 }
 .card { background:#fff; border-radius:10px; margin-bottom:12px; padding:12px; border:1px solid #e3eaf2; box-shadow: 0 1.5px 6px rgba(33,150,243,0.04) }
 .auth-card { padding: 16px }
@@ -349,6 +350,7 @@ async function deleteDevice(d, opts = {}) {
 @media (max-width: 600px) {
   .panel-view { padding: 12px 2vw 10px 2vw; font-size: 16px }
   .auth-form .field, .card .field { flex-direction: column; align-items: stretch }
+  .field-label { align-self: flex-start }
   .field input { width: 100% }
 }
 </style>

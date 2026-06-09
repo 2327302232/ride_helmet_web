@@ -37,6 +37,20 @@ body {
   margin: 0;
 }
 
+/* 中文 UI 常见短词（按钮、表单标签、标题等）不应被拆成单字换行。
+   长文本/日志仍由各组件自己的 pre、details、body 样式控制换行。 */
+button,
+label,
+h1,
+h2,
+h3,
+.log-btn,
+.status-text,
+.field-label {
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
 h1,
 h2 {
   font-family: var(--heading);
