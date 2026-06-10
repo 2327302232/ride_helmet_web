@@ -600,7 +600,8 @@ export function publishCommand({ deviceId, cmdId = null, type, action, value } =
 
     // 默认使用 qosCmd，但针对 request/status（刷新设备状态请求）使用 QoS 0
     const pubOpts = { qos: qosCmd };
-    if (type === 'request' && action === 'status') pubOpts.qos = 0;
+    // QoS 0 for status requests and power commands to avoid TLS blocking on EC200U
+    if ((type === 'request' && action === 'status') || (type === 'power' && action === 'set')) pubOpts.qos = 0;
 
     client.publish(topic, JSON.stringify(payload), pubOpts, (err) => {
       if (err) {

@@ -124,3 +124,24 @@ sqlite3 server/data/tracks.sqlite "SELECT * FROM device_commands ORDER BY ts DES
 ```
 
 说明：仓库中仍保留 `test-start.mjs` 作为调试/测试脚本（位于仓库根目录），它也会初始化 DB 并启动 MQTT，用于临时调试。长期运行的服务建议使用 `src/server.js`（并通过 `npm run start` 启动）。
+
+## 板端 MQTT 开发协议
+
+板端设备（UniKnect MicroPython / EC200U）与后端的 MQTT 通信协议详见：
+
+📄 **[板端 MQTT 开发协议文档](docs/device-mqtt-protocol.md)**
+
+该文档包含：
+- MQTT Broker 连接配置
+- Topic 规范与 Payload 格式
+- 命令处理流程（状态刷新、省电模式）
+- Telemetry 与事件上报
+- 时间戳规范
+- MicroPython 实现要点（避免 TLS 阻塞）
+- 调试方法与常见问题
+
+**关键要点**：
+- 板端所有 publish 使用 **QoS 0**（避免 EC200U + TLS 阻塞）
+- 回复命令时必须包含 **cmdId**
+- `low_power` 必须是**布尔值**而非字符串
+- 在主循环中 publish，不要在 MQTT 回调中直接发送
