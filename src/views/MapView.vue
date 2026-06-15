@@ -16,7 +16,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { loadAmapSdk, initMap, createMarker, initGeolocation } from '../utils/amap.js'
+import { loadAmapSdk, initMap, createMarker, initGeolocation, addPolyline } from '../utils/amap.js'
 import initTrackService from '../utils/trackService.js'
 import { splitByGap, segmentTrack } from '../utils/segment.js'
 import { useAppStore } from '../stores'
@@ -30,6 +30,7 @@ const LIVE_GAP_MS = 30 * 60 * 1000
 const LIVE_INITIAL_WINDOW_MS = 30 * 60 * 1000
 const LIVE_FETCH_LIMIT = 5000
 const LIVE_RECONNECT_MS = 1500
+const CHINA_TZ_OFFSET_MS = 8 * 60 * 60 * 1000
 
 function firstQueryValue(value) {
   return Array.isArray(value) ? value[0] : value
@@ -54,7 +55,7 @@ const liveStatusLabel = computed(() => {
 const liveLastUpdateText = computed(() => {
   const ts = Number(liveLastTsRef.value)
   if (!Number.isFinite(ts)) return '暂无'
-  return new Date(ts).toLocaleString()
+  return formatLiveTime(ts)
 })
 // segmentId -> points 缓存，避免重复请求
 const segmentPointsCache = {}
@@ -108,6 +109,9 @@ let liveStopped = true
 let liveSessionId = 0
 let liveLastTs = null
 const liveSeen = new Set()
+let livePoints = []
+let livePolyline = null
+let liveMarkers = []
 
 async function getLocationDiagnostics(extra = {}) {
   const info = {
@@ -304,6 +308,35 @@ function normalizeLiveTs(raw) {
   return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
 }
 
+function getDisplayLiveTs(ts) {
+  const n = Number(ts)
+  if (!Number.isFinite(n)) return NaN
+  const diff = n - Date.now()
+  if (diff > 3 * 60 * 60 * 1000 && diff < 12 * 60 * 60 * 1000) {
+    return n - CHINA_TZ_OFFSET_MS
+  }
+  return n
+}
+
+function formatLiveTime(ts) {
+  const displayTs = getDisplayLiveTs(ts)
+  if (!Number.isFinite(displayTs)) return '暂无'
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).format(new Date(displayTs))
+  } catch (e) {
+    return new Date(displayTs).toLocaleString()
+  }
+}
+
 function normalizeLivePoint(payload) {
   if (!payload) return null
   const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {}
@@ -341,6 +374,141 @@ function rememberLivePoints(points) {
   }
 }
 
+function makeLiveMarkerHtml(style = {}) {
+  const size = Number(style.size) || 10
+  const color = style.color || '#ff8800'
+  const border = style.border || '#ffffff'
+  const borderWidth = Number(style.borderWidth) || 1
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:${borderWidth}px solid ${border};box-shadow:0 0 4px rgba(0,0,0,0.12)"></div>`
+}
+
+function liveMarkerStyle(index, total) {
+  if (total <= 1) return { size: 14, color: '#e74c3c', borderWidth: 2 }
+  if (index === 0) return { size: 14, color: '#2ecc71', borderWidth: 2 }
+  if (index === total - 1) return { size: 14, color: '#e74c3c', borderWidth: 2 }
+  return { size: 10, color: '#ff8800', borderWidth: 1 }
+}
+
+function applyLiveMarkerStyle(marker, index, total) {
+  if (!marker) return
+  const style = liveMarkerStyle(index, total)
+  try {
+    if (typeof marker.setContent === 'function') marker.setContent(makeLiveMarkerHtml(style))
+    if (typeof marker.setOffset === 'function' && typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') {
+      const size = Number(style.size) || 10
+      marker.setOffset(new window.AMap.Pixel(Math.round(-size / 2), Math.round(-size / 2)))
+    }
+  } catch (e) {
+    console.warn('[MapView] live marker style failed', e)
+  }
+}
+
+function createLiveMarker(point, index, total) {
+  try {
+    const style = liveMarkerStyle(index, total)
+    const opts = { content: makeLiveMarkerHtml(style) }
+    if (typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') {
+      const size = Number(style.size) || 10
+      opts.offset = new window.AMap.Pixel(Math.round(-size / 2), Math.round(-size / 2))
+    }
+    return createMarker(map, [point.lng, point.lat], opts)
+  } catch (e) {
+    console.warn('[MapView] create live marker failed', e)
+    return null
+  }
+}
+
+function clearLiveLayers() {
+  try {
+    if (livePolyline && typeof livePolyline.setMap === 'function') livePolyline.setMap(null)
+    for (const marker of liveMarkers) {
+      try { if (marker && typeof marker.setMap === 'function') marker.setMap(null) } catch (e) {}
+    }
+  } catch (e) {
+    console.warn('[MapView] clear live layers failed', e)
+  } finally {
+    livePoints = []
+    livePolyline = null
+    liveMarkers = []
+  }
+}
+
+function fitLiveTrackOnce() {
+  try {
+    const overlays = []
+    if (livePolyline) overlays.push(livePolyline)
+    for (const marker of liveMarkers) {
+      if (marker) overlays.push(marker)
+    }
+    if (overlays.length && map && typeof map.setFitView === 'function') map.setFitView(overlays)
+  } catch (e) {
+    const last = livePoints[livePoints.length - 1]
+    try {
+      if (last) {
+        map.setCenter([last.lng, last.lat])
+        map.setZoom(17)
+      }
+    } catch (err) {}
+  }
+}
+
+function renderLiveTrack(points, { fit = true } = {}) {
+  clearLiveLayers()
+  livePoints = Array.isArray(points) ? points.slice() : []
+  const total = livePoints.length
+  if (!total) {
+    livePointCount.value = 0
+    return
+  }
+
+  try {
+    if (total > 1) {
+      const path = livePoints.map((p) => [Number(p.lng), Number(p.lat)])
+      livePolyline = addPolyline(map, path, { strokeColor: '#ff8800', strokeWeight: 2, strokeOpacity: 1 })
+    }
+  } catch (e) {
+    console.warn('[MapView] render live polyline failed', e)
+  }
+
+  for (let i = 0; i < total; i++) {
+    const marker = createLiveMarker(livePoints[i], i, total)
+    if (marker) liveMarkers.push(marker)
+  }
+
+  livePointCount.value = total
+  if (fit) fitLiveTrackOnce()
+}
+
+function appendLiveLayerPoint(point) {
+  const prevTotal = livePoints.length
+  livePoints.push(point)
+  const total = livePoints.length
+
+  if (prevTotal > 0 && liveMarkers.length > 0) {
+    applyLiveMarkerStyle(liveMarkers[liveMarkers.length - 1], prevTotal - 1, total)
+  }
+
+  const marker = createLiveMarker(point, total - 1, total)
+  if (marker) liveMarkers.push(marker)
+
+  try {
+    const path = livePoints.map((p) => [Number(p.lng), Number(p.lat)])
+    if (livePolyline && typeof livePolyline.setPath === 'function') {
+      livePolyline.setPath(path)
+    } else if (path.length > 1) {
+      livePolyline = addPolyline(map, path, { strokeColor: '#ff8800', strokeWeight: 2, strokeOpacity: 1 })
+    }
+  } catch (e) {
+    console.warn('[MapView] append live polyline failed', e)
+  }
+
+  try {
+    if (map && typeof map.setCenter === 'function') map.setCenter([point.lng, point.lat])
+  } catch (e) {}
+
+  livePointCount.value = total
+}
+
 async function fetchTrackPoints({ deviceId, from, to, limit = LIVE_FETCH_LIMIT } = {}) {
   const params = new URLSearchParams()
   params.set('deviceId', deviceId || liveDeviceId.value)
@@ -368,6 +536,7 @@ async function renderInitialLiveTrack(sessionId) {
     const { segments } = segmentTrack(rawPoints, LIVE_GAP_MS)
     const latest = segments.length ? segments[segments.length - 1] : null
     if (!latest || !Array.isArray(latest.points) || latest.points.length === 0) {
+      clearLiveLayers()
       try { trackService.clearTrack() } catch (e) {}
       liveStatus.value = 'waiting'
       return
@@ -378,10 +547,11 @@ async function renderInitialLiveTrack(sessionId) {
     liveLastTs = lastPoint.ts
     liveLastTsRef.value = lastPoint.ts
     livePointCount.value = points.length
-    await trackService.renderer.renderTrack(points)
+    renderLiveTrack(points, { fit: true })
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'live'
   } catch (e) {
     console.warn('[MapView] initial live track failed', e)
+    clearLiveLayers()
     try { if (trackService) trackService.clearTrack() } catch (err) {}
     resetLivePointState()
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'waiting'
@@ -396,6 +566,7 @@ async function appendLivePoint(point, sessionId) {
   if (liveSeen.has(key)) return false
 
   if (liveLastTs !== null && point.ts - liveLastTs > LIVE_GAP_MS) {
+    clearLiveLayers()
     try { trackService.clearTrack() } catch (e) {}
     resetLivePointState()
   }
@@ -404,9 +575,7 @@ async function appendLivePoint(point, sessionId) {
   liveLastTs = point.ts
   liveLastTsRef.value = point.ts
   try {
-    const result = await trackService.appendPoints([point])
-    if (result && Array.isArray(result.points)) livePointCount.value = result.points.length
-    else livePointCount.value += 1
+    appendLiveLayerPoint(point)
     liveStatus.value = 'live'
     return true
   } catch (e) {
@@ -505,6 +674,7 @@ function stopLiveMode({ clearMap = true } = {}) {
   liveStatus.value = 'disconnected'
   resetLivePointState()
   if (clearMap && trackService) {
+    clearLiveLayers()
     try { trackService.clearTrack() } catch (e) {}
   }
 }
@@ -517,6 +687,7 @@ async function startLiveMode() {
     stopSelectionWatch = null
   }
   _clearSegmentMarkers()
+  clearLiveLayers()
   try {
     if (trackService.renderer && typeof trackService.renderer.clearAll === 'function') trackService.renderer.clearAll()
     trackService.clearTrack()
@@ -578,6 +749,7 @@ async function startNormalMode() {
     try { trackService.renderer.clearAll() } catch (e) {}
   }
   _clearSegmentMarkers()
+  clearLiveLayers()
   await ensureBrowserLocation()
   startSelectionRendering()
 }
