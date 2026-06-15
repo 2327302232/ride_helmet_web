@@ -754,7 +754,7 @@ onUnmounted(() => {
 .ps-switch input:checked + .ps-slider:before { transform: translateX(22px) }
 .power-save-panel.disabled { opacity: 0.55; pointer-events: none }
 .power-save-panel.disabled .ps-desc { color: #9e9e9e }
-.sensor-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-bottom:8px }
+.sensor-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; margin-bottom:8px }
 .sensor-grid.disabled { opacity: 0.55; pointer-events: none }
 .sensor-card { background:#fafafa; border:1px solid #eef6ff; border-radius:10px; padding:10px 12px; min-height:68px; box-sizing:border-box; text-align:left }
 .gps-card { grid-column: span 2; min-height:92px }
@@ -781,12 +781,9 @@ onUnmounted(() => {
 .gps-action-btn:disabled { cursor:default }
 .gps-action-btn:not(:disabled):hover { background:#1976d2 }
 .sensor-updated { color:#888; font-size:12px; text-align:left; margin:0 0 12px 2px }
-@media (max-width: 720px) {
-  .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 @media (max-width: 420px) {
-  .sensor-grid { grid-template-columns: 1fr; }
-  .gps-card { grid-column: span 1; }
+  .sensor-grid { gap:8px; }
+  .gps-card { grid-column: span 2; }
   .gps-action-btn { padding:8px 10px; font-size:13px; }
   .power-save-panel { align-items:flex-start; }
   .power-save-panel .ps-main { flex-direction:column; align-items:flex-start; gap:6px; }
