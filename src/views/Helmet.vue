@@ -20,30 +20,30 @@
           </div>
 
     <div style="padding:16px;">
-      <div class="status-bar">
-        <div class="status-left">
-          <img :src="batteryIcon" alt="battery" class="status-icon" />
-          <div class="battery-text">{{ simStatus === 'offline' ? 'unknown' : (batteryLevel + '%') }}</div>
-        </div>
-      </div>
       <div class="power-save-panel" :class="{disabled: powerSaveUnavailable}">
-        <div class="ps-left">
-          <span class="ps-label">省电模式</span>
-          <span class="ps-desc">{{ powerSaveDesc }}</span>
+        <div class="ps-main">
+          <div class="ps-left">
+            <span class="ps-label">省电模式</span>
+            <span class="ps-desc">{{ powerSaveDesc }}</span>
+          </div>
+          <div class="battery-status">
+            <img :src="batteryIcon" alt="battery" class="status-icon" />
+            <span class="battery-text">{{ simStatus === 'offline' ? 'unknown' : (batteryLevel + '%') }}</span>
+          </div>
         </div>
         <label class="ps-switch">
           <input type="checkbox" :checked="powerSave" @click.prevent="onTogglePowerSave" :disabled="powerSaveUnavailable || powerSaveLoading || loading" />
           <span class="ps-slider"></span>
         </label>
       </div>
-      <div class="sensor-grid">
+      <div class="sensor-grid" :class="{disabled: powerSaveUnavailable}">
         <div class="sensor-card">
           <div class="sensor-label">速度</div>
           <div class="sensor-value">{{ formatValue(sensor.speed, ' km/h') }}</div>
         </div>
         <div class="sensor-card">
-          <div class="sensor-label">GPS</div>
-          <div class="sensor-value sensor-small">{{ formatGps(sensor.lng, sensor.lat) }}</div>
+          <div class="sensor-label">湿度</div>
+          <div class="sensor-value">{{ formatValue(sensor.humidity, ' %') }}</div>
         </div>
         <div class="sensor-card">
           <div class="sensor-label">心率</div>
@@ -53,9 +53,12 @@
           <div class="sensor-label">温度</div>
           <div class="sensor-value">{{ formatValue(sensor.temperature, ' ℃') }}</div>
         </div>
-        <div class="sensor-card">
-          <div class="sensor-label">湿度</div>
-          <div class="sensor-value">{{ formatValue(sensor.humidity, ' %') }}</div>
+        <div class="sensor-card gps-card">
+          <div class="sensor-label">GPS</div>
+          <div class="gps-card-body">
+            <div class="sensor-value sensor-small gps-position">{{ formatGps(sensor.lng, sensor.lat) }}</div>
+            <button class="gps-action-btn" type="button" :disabled="powerSaveUnavailable">查看实时定位</button>
+          </div>
         </div>
       </div>
       <div class="sensor-updated">最近数据：{{ sensor.ts ? formatTs(sensor.ts) : '暂无' }}</div>
@@ -108,9 +111,6 @@ const sensor = ref({
 
 const powerSaveUnavailable = computed(() => simStatus.value !== 'online')
 const powerSaveDesc = computed(() => {
-  if (simStatus.value === 'offline') return '不可用（设备离线）'
-  if (simStatus.value === 'pending') return '不可用（正在连接）'
-  if (simStatus.value === 'unknown' || !simStatus.value) return '不可用（设备状态未知）'
   return powerSave.value ? '已启用' : '未启用'
 })
 const batteryIcon = computed(() => {
@@ -738,14 +738,14 @@ onUnmounted(() => {
 .status-unknown .status-text { color:#9e9e9e }
 .status-all .status-text { color:#1976d2 }
 .status-pending .status-text { color:#ffb300 }
-.status-bar { display:flex; align-items:center; gap:12px; background:#fafafa; padding:10px 12px; border-radius:8px; margin-bottom:12px; border:1px solid #eef6ff }
-.status-left { display:flex; align-items:center; gap:8px }
 .status-icon { width:20px; height:20px; display:block }
 .battery-text { font-weight:700; color:#1976d2 }
 .power-save-panel { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fafafa; padding:10px 12px; border-radius:8px; margin-bottom:12px; border:1px solid #f0f0f0 }
-.power-save-panel .ps-left { display:flex; align-items:center; gap:8px }
-.ps-label { font-weight:700; color:#1976d2 }
-.ps-desc { font-size:13px; color:#666 }
+.power-save-panel .ps-main { flex:1; min-width:0; display:flex; align-items:center; justify-content:space-between; gap:12px }
+.power-save-panel .ps-left { display:flex; align-items:center; gap:8px; min-width:0; white-space:nowrap }
+.battery-status { display:flex; align-items:center; gap:6px; flex-shrink:0; background:#fff; border:1px solid #e3f2fd; border-radius:999px; padding:4px 8px }
+.ps-label { flex-shrink:0; font-weight:700; color:#1976d2; white-space:nowrap }
+.ps-desc { font-size:13px; color:#666; white-space:nowrap }
 .ps-switch { position:relative; display:inline-block; width:48px; height:26px }
 .ps-switch input { opacity:0; width:0; height:0 }
 .ps-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#ccc; transition:.18s; border-radius:20px }
@@ -755,17 +755,40 @@ onUnmounted(() => {
 .power-save-panel.disabled { opacity: 0.55; pointer-events: none }
 .power-save-panel.disabled .ps-desc { color: #9e9e9e }
 .sensor-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-bottom:8px }
+.sensor-grid.disabled { opacity: 0.55; pointer-events: none }
 .sensor-card { background:#fafafa; border:1px solid #eef6ff; border-radius:10px; padding:10px 12px; min-height:68px; box-sizing:border-box; text-align:left }
+.gps-card { grid-column: span 2; min-height:92px }
+.gps-card-body { display:flex; align-items:center; justify-content:space-between; gap:10px }
 .sensor-card.sensor-alert { background:#fff5f5; border-color:#ffcdd2 }
 .sensor-label { color:#666; font-size:13px; font-weight:700; margin-bottom:6px }
 .sensor-value { color:#111; font-size:18px; font-weight:800; line-height:1.25; word-break:keep-all }
 .sensor-small { font-size:13px; user-select:all }
+.gps-position { min-width:0; overflow-wrap:anywhere }
 .sensor-extra { color:#c62828; font-size:12px; margin-top:4px }
+.gps-action-btn {
+  background:#2196f3;
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:8px 12px;
+  font-size:14px;
+  font-weight:700;
+  white-space:nowrap;
+  flex-shrink:0;
+  cursor:pointer;
+  box-shadow:0 2px 8px rgba(33,150,243,0.08);
+}
+.gps-action-btn:disabled { cursor:default }
+.gps-action-btn:not(:disabled):hover { background:#1976d2 }
 .sensor-updated { color:#888; font-size:12px; text-align:left; margin:0 0 12px 2px }
 @media (max-width: 720px) {
   .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 420px) {
   .sensor-grid { grid-template-columns: 1fr; }
+  .gps-card { grid-column: span 1; }
+  .gps-action-btn { padding:8px 10px; font-size:13px; }
+  .power-save-panel { align-items:flex-start; }
+  .power-save-panel .ps-main { flex-direction:column; align-items:flex-start; gap:6px; }
 }
 </style>

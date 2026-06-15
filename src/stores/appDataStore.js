@@ -53,7 +53,7 @@ export const useAppDataStore = defineStore('appData', {
           }
 
           // 若需要或 localStorage 没有数据，再尝试请求后端的 /api/me（若后端实现）
-          const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8787'
+          const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
           const url = `${backendBase.replace(/\/$/, '')}/api/me`
           const resp = await fetch(url)
           if (!resp.ok) {
@@ -104,7 +104,7 @@ export const useAppDataStore = defineStore('appData', {
 
       const p = (async () => {
         try {
-          const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8787'
+          const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
           const params = new URLSearchParams()
           params.set('deviceId', deviceId)
           if (from !== undefined) params.set('from', String(from))

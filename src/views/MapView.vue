@@ -31,7 +31,7 @@ async function _renderSegmentById(segmentId) {
   }
   // 拉取后端
   try {
-    const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8787'
+    const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
     const params = new URLSearchParams()
     params.set('deviceId', meta.deviceId)
     params.set('from', meta.startTs)

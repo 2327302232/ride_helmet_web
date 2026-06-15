@@ -100,7 +100,7 @@ import MessageModal from '../components/MessageModal.vue'
 import editIcon from '../assets/edit.svg'
 onMounted(() => { document.title = '骑行头盔用户站-Me' })
 
-const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8787'
+const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
 
 const user = ref(JSON.parse(localStorage.getItem('ride_user') || 'null'))
 const mode = ref('login')
