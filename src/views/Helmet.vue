@@ -57,7 +57,7 @@
           <div class="sensor-label">GPS</div>
           <div class="gps-card-body">
             <div class="sensor-value sensor-small gps-position">{{ formatGps(sensor.lng, sensor.lat) }}</div>
-            <button class="gps-action-btn" type="button" :disabled="powerSaveUnavailable">查看实时定位</button>
+            <button class="gps-action-btn" type="button" :disabled="powerSaveUnavailable || !deviceId" @click="goLiveLocation">查看实时定位</button>
           </div>
         </div>
       </div>
@@ -72,6 +72,7 @@
 
 <script setup>
 import { onMounted, ref, watch, computed, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 
 import batteryWorking from '../assets/battery-working.svg'
 import batteryEmpty from '../assets/battery-empty.svg'
@@ -80,6 +81,7 @@ import batteryFull from '../assets/battery-full.svg'
 
 onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
+const router = useRouter()
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
 const deviceId = ref(null)
 const devicesList = ref([])
@@ -142,6 +144,17 @@ function toggleDevices() {
 function selectDevice(d) {
   deviceId.value = d.deviceId || d.device_id
   showDeviceDropdown.value = false
+}
+
+function goLiveLocation() {
+  if (simStatus.value !== 'online' || !deviceId.value) return
+  router.push({
+    name: 'map',
+    query: {
+      mode: 'live',
+      deviceId: String(deviceId.value)
+    }
+  })
 }
 
 function onDocClick(ev) {

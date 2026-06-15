@@ -1,20 +1,61 @@
 <template>
   <div class="map-container">
     <div id="map" class="map"></div>
-  
+    <div v-if="isLiveMode" class="live-status-panel">
+      <div class="live-status-main">
+        <span class="live-dot" :class="'live-dot-' + liveStatus"></span>
+        <span>{{ liveStatusLabel }}</span>
+      </div>
+      <div class="live-status-row">设备：{{ liveDeviceId }}</div>
+      <div class="live-status-row">最近：{{ liveLastUpdateText }}</div>
+      <div class="live-status-row">点位：{{ livePointCount }}</div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { loadAmapSdk, initMap, createMarker, initGeolocation } from '../utils/amap.js'
 import initTrackService from '../utils/trackService.js'
-import { splitByGap } from '../utils/segment.js'
+import { splitByGap, segmentTrack } from '../utils/segment.js'
 import { useAppStore } from '../stores'
 import { showMessage } from '../composables/useMessage'
 import { useTrackSelection } from '../stores/trackSelection.js'
 // Pinia 轨迹分段选择 store
 const selectionStore = useTrackSelection()
+const route = useRoute()
+const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
+const LIVE_GAP_MS = 30 * 60 * 1000
+const LIVE_INITIAL_WINDOW_MS = 30 * 60 * 1000
+const LIVE_FETCH_LIMIT = 5000
+const LIVE_RECONNECT_MS = 1500
+
+function firstQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value
+}
+
+const isLiveMode = computed(() => firstQueryValue(route.query.mode) === 'live')
+const liveDeviceId = computed(() => String(firstQueryValue(route.query.deviceId) || 'dev-001'))
+const liveStatus = ref('idle')
+const liveLastTsRef = ref(null)
+const livePointCount = ref(0)
+const liveStatusLabel = computed(() => {
+  switch (liveStatus.value) {
+    case 'connecting': return '连接中'
+    case 'live': return '实时中'
+    case 'reconnecting': return '重连中'
+    case 'waiting': return '等待实时数据'
+    case 'disconnected': return '已断开'
+    case 'error': return '连接异常'
+    default: return '准备中'
+  }
+})
+const liveLastUpdateText = computed(() => {
+  const ts = Number(liveLastTsRef.value)
+  if (!Number.isFinite(ts)) return '暂无'
+  return new Date(ts).toLocaleString()
+})
 // segmentId -> points 缓存，避免重复请求
 const segmentPointsCache = {}
 // 拉取并渲染单个分段
@@ -31,7 +72,6 @@ async function _renderSegmentById(segmentId) {
   }
   // 拉取后端
   try {
-    const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
     const params = new URLSearchParams()
     params.set('deviceId', meta.deviceId)
     params.set('from', meta.startTs)
@@ -60,6 +100,14 @@ let geolocation
 let trackService = null
 const trackReady = ref(false)
 let segmentMarkers = []
+let stopSelectionWatch = null
+let stopModeWatch = null
+let liveWs = null
+let liveReconnectTimer = null
+let liveStopped = true
+let liveSessionId = 0
+let liveLastTs = null
+const liveSeen = new Set()
 
 async function getLocationDiagnostics(extra = {}) {
   const info = {
@@ -231,6 +279,313 @@ function _clearSegmentMarkers() {
       }
     }
   } catch (e) { /* ignore */ } finally { segmentMarkers = [] }
+}
+
+function getWsUrl(base) {
+  let url = (base || '').replace(/\/$/, '')
+  if (url.startsWith('http://')) url = url.replace('http://', 'ws://')
+  else if (url.startsWith('https://')) url = url.replace('https://', 'wss://')
+  else if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+  }
+  return url + '/ws'
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return null
+}
+
+function normalizeLiveTs(raw) {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return NaN
+  return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+}
+
+function normalizeLivePoint(payload) {
+  if (!payload) return null
+  const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {}
+  const ts = normalizeLiveTs(firstDefined(payload.ts, raw.ts))
+  const lng = Number(firstDefined(payload.lng, payload.lon, payload.longitude, raw.lng, raw.lon, raw.longitude))
+  const lat = Number(firstDefined(payload.lat, payload.latitude, raw.lat, raw.latitude))
+  if (!Number.isFinite(ts) || !Number.isFinite(lng) || !Number.isFinite(lat)) return null
+  if (lng < -180 || lng > 180 || lat < -90 || lat > 90) return null
+  return {
+    ...payload,
+    deviceId: String(firstDefined(payload.deviceId, raw.deviceId, liveDeviceId.value)),
+    ts,
+    lng,
+    lat,
+    speed: firstDefined(payload.speed, raw.speed, raw.spd),
+    battery: firstDefined(payload.battery, raw.battery, raw.bat)
+  }
+}
+
+function makeLivePointKey(point) {
+  return `${liveDeviceId.value}:${point.ts}:${point.lng}:${point.lat}`
+}
+
+function resetLivePointState() {
+  liveLastTs = null
+  liveLastTsRef.value = null
+  livePointCount.value = 0
+  liveSeen.clear()
+}
+
+function rememberLivePoints(points) {
+  for (const point of points || []) {
+    if (!point) continue
+    liveSeen.add(makeLivePointKey(point))
+  }
+}
+
+async function fetchTrackPoints({ deviceId, from, to, limit = LIVE_FETCH_LIMIT } = {}) {
+  const params = new URLSearchParams()
+  params.set('deviceId', deviceId || liveDeviceId.value)
+  if (from !== undefined) params.set('from', String(from))
+  if (to !== undefined) params.set('to', String(to))
+  if (limit !== undefined) params.set('limit', String(limit))
+  const url = `${backendBase.replace(/\/$/, '')}/api/track?${params.toString()}`
+  const resp = await fetch(url)
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  const data = await resp.json()
+  return Array.isArray(data.points) ? data.points : []
+}
+
+async function renderInitialLiveTrack(sessionId) {
+  if (!trackService || liveStopped || sessionId !== liveSessionId) return
+  liveStatus.value = 'connecting'
+  resetLivePointState()
+  try {
+    const rawPoints = await fetchTrackPoints({
+      deviceId: liveDeviceId.value,
+      from: Date.now() - LIVE_INITIAL_WINDOW_MS,
+      limit: LIVE_FETCH_LIMIT
+    })
+    if (liveStopped || sessionId !== liveSessionId) return
+    const { segments } = segmentTrack(rawPoints, LIVE_GAP_MS)
+    const latest = segments.length ? segments[segments.length - 1] : null
+    if (!latest || !Array.isArray(latest.points) || latest.points.length === 0) {
+      try { trackService.clearTrack() } catch (e) {}
+      liveStatus.value = 'waiting'
+      return
+    }
+    const points = latest.points
+    const lastPoint = points[points.length - 1]
+    rememberLivePoints(points)
+    liveLastTs = lastPoint.ts
+    liveLastTsRef.value = lastPoint.ts
+    livePointCount.value = points.length
+    await trackService.renderer.renderTrack(points)
+    if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'live'
+  } catch (e) {
+    console.warn('[MapView] initial live track failed', e)
+    try { if (trackService) trackService.clearTrack() } catch (err) {}
+    resetLivePointState()
+    if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'waiting'
+  }
+}
+
+async function appendLivePoint(point, sessionId) {
+  if (!trackService || liveStopped || sessionId !== liveSessionId || !point) return false
+  if (String(point.deviceId || liveDeviceId.value) !== String(liveDeviceId.value)) return false
+  if (liveLastTs !== null && point.ts < liveLastTs) return false
+  const key = makeLivePointKey(point)
+  if (liveSeen.has(key)) return false
+
+  if (liveLastTs !== null && point.ts - liveLastTs > LIVE_GAP_MS) {
+    try { trackService.clearTrack() } catch (e) {}
+    resetLivePointState()
+  }
+
+  liveSeen.add(key)
+  liveLastTs = point.ts
+  liveLastTsRef.value = point.ts
+  try {
+    const result = await trackService.appendPoints([point])
+    if (result && Array.isArray(result.points)) livePointCount.value = result.points.length
+    else livePointCount.value += 1
+    liveStatus.value = 'live'
+    return true
+  } catch (e) {
+    console.warn('[MapView] append live point failed', e)
+    liveStatus.value = 'error'
+    return false
+  }
+}
+
+async function backfillLiveGap(sessionId) {
+  if (!trackService || liveStopped || sessionId !== liveSessionId || liveLastTs === null) return
+  try {
+    const rawPoints = await fetchTrackPoints({
+      deviceId: liveDeviceId.value,
+      from: liveLastTs + 1,
+      limit: LIVE_FETCH_LIMIT
+    })
+    if (liveStopped || sessionId !== liveSessionId) return
+    const { cleanPoints } = segmentTrack(rawPoints, LIVE_GAP_MS)
+    for (const point of cleanPoints) {
+      await appendLivePoint(point, sessionId)
+    }
+  } catch (e) {
+    console.warn('[MapView] live backfill failed', e)
+  }
+}
+
+function scheduleLiveReconnect(sessionId) {
+  if (liveStopped || sessionId !== liveSessionId) return
+  liveStatus.value = 'reconnecting'
+  try { if (liveReconnectTimer) clearTimeout(liveReconnectTimer) } catch (e) {}
+  liveReconnectTimer = setTimeout(() => {
+    liveReconnectTimer = null
+    connectLiveWs(sessionId, true)
+  }, LIVE_RECONNECT_MS)
+}
+
+function handleLiveWsMessage(msg, sessionId) {
+  if (!msg || liveStopped || sessionId !== liveSessionId) return
+  if (msg.type === 'telemetry') {
+    const payload = msg.payload || {}
+    if (String(payload.deviceId || liveDeviceId.value) !== String(liveDeviceId.value)) return
+    const point = normalizeLivePoint(payload)
+    appendLivePoint(point, sessionId)
+  } else if (msg.type === 'subscribed') {
+    if (livePointCount.value === 0) liveStatus.value = 'waiting'
+  }
+}
+
+function connectLiveWs(sessionId, reconnecting = false) {
+  if (liveStopped || sessionId !== liveSessionId) return
+  try {
+    if (liveWs && (liveWs.readyState === WebSocket.OPEN || liveWs.readyState === WebSocket.CONNECTING)) return
+    liveStatus.value = reconnecting ? 'reconnecting' : 'connecting'
+    liveWs = new WebSocket(getWsUrl(backendBase))
+    liveWs.onopen = () => {
+      if (liveStopped || sessionId !== liveSessionId) {
+        try { liveWs && liveWs.close() } catch (e) {}
+        return
+      }
+      try { liveWs.send(JSON.stringify({ type: 'subscribe', deviceId: liveDeviceId.value })) } catch (e) {}
+      liveStatus.value = livePointCount.value > 0 ? 'live' : 'waiting'
+      backfillLiveGap(sessionId)
+    }
+    liveWs.onmessage = (ev) => {
+      try { handleLiveWsMessage(JSON.parse(ev.data), sessionId) } catch (e) {}
+    }
+    liveWs.onerror = () => {
+      if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'reconnecting'
+    }
+    liveWs.onclose = () => {
+      liveWs = null
+      if (!liveStopped && sessionId === liveSessionId) scheduleLiveReconnect(sessionId)
+    }
+  } catch (e) {
+    console.warn('[MapView] live ws connect failed', e)
+    scheduleLiveReconnect(sessionId)
+  }
+}
+
+function stopLiveMode({ clearMap = true } = {}) {
+  liveStopped = true
+  liveSessionId += 1
+  try { if (liveReconnectTimer) clearTimeout(liveReconnectTimer) } catch (e) {}
+  liveReconnectTimer = null
+  try {
+    if (liveWs) {
+      liveWs.onopen = null
+      liveWs.onmessage = null
+      liveWs.onerror = null
+      liveWs.onclose = null
+      liveWs.close()
+    }
+  } catch (e) {}
+  liveWs = null
+  liveStatus.value = 'disconnected'
+  resetLivePointState()
+  if (clearMap && trackService) {
+    try { trackService.clearTrack() } catch (e) {}
+  }
+}
+
+async function startLiveMode() {
+  if (!trackService) return
+  stopLiveMode({ clearMap: true })
+  if (stopSelectionWatch) {
+    stopSelectionWatch()
+    stopSelectionWatch = null
+  }
+  _clearSegmentMarkers()
+  try {
+    if (trackService.renderer && typeof trackService.renderer.clearAll === 'function') trackService.renderer.clearAll()
+    trackService.clearTrack()
+  } catch (e) {}
+  try {
+    if (marker && typeof marker.setMap === 'function') marker.setMap(null)
+  } catch (e) {}
+  marker = null
+  geolocation = null
+
+  liveStopped = false
+  const sessionId = liveSessionId + 1
+  liveSessionId = sessionId
+  await renderInitialLiveTrack(sessionId)
+  connectLiveWs(sessionId)
+}
+
+function startSelectionRendering() {
+  if (stopSelectionWatch || !trackService) return
+  stopSelectionWatch = watch(() => selectionStore.selected.slice(), async (newVal, oldVal = []) => {
+    if (isLiveMode.value) return
+    const newSet = new Set(newVal)
+    const oldSet = new Set(oldVal)
+    for (const id of newSet) {
+      if (!oldSet.has(id)) {
+        await _renderSegmentById(id)
+      }
+    }
+    for (const id of oldSet) {
+      if (!newSet.has(id)) {
+        if (trackService && trackService.renderer && typeof trackService.renderer.clearSegment === 'function') {
+          trackService.renderer.clearSegment(id)
+          console.debug('[MapView] clearSegment', id)
+        }
+      }
+    }
+  }, { immediate: true })
+}
+
+async function ensureBrowserLocation() {
+  if (!map) return
+  if (!marker) marker = createMarker(map, map.getCenter())
+  if (!geolocation) geolocation = await initGeolocation()
+  status.value = '地图已加载'
+  try {
+    await locate()
+  } catch (e) {
+    console.warn('[MapView] locate failed', e)
+  }
+}
+
+async function startNormalMode() {
+  stopLiveMode({ clearMap: true })
+  if (stopSelectionWatch) {
+    stopSelectionWatch()
+    stopSelectionWatch = null
+  }
+  if (trackService && trackService.renderer && typeof trackService.renderer.clearAll === 'function') {
+    try { trackService.renderer.clearAll() } catch (e) {}
+  }
+  _clearSegmentMarkers()
+  await ensureBrowserLocation()
+  startSelectionRendering()
+}
+
+async function applyCurrentMode() {
+  if (!trackService) return
+  if (isLiveMode.value) await startLiveMode()
+  else await startNormalMode()
 }
 
 async function loadTrack() {
@@ -467,18 +822,6 @@ onMounted(async () => {
     status.value = '初始化地图…'
     map = initMap('map', { zoom: 14, center: [116.397428, 39.90923] })
 
-    marker = createMarker(map, map.getCenter())
-
-    geolocation = await initGeolocation()
-    status.value = '地图已加载'
-
-    // 先进行定位，再初始化轨迹渲染器并加载轨迹（保证先定位）
-    try {
-      await locate()
-    } catch (e) {
-      console.warn('[MapView] locate failed', e)
-    }
-
     // 初始化轨迹渲染器
     try {
       trackService = initTrackService(map)
@@ -487,32 +830,10 @@ onMounted(async () => {
       console.warn('[MapView] initTrackService failed', e)
     }
 
-    // 订阅 selected 变化，增量渲染/清理分段
-    let prevSelected = new Set(selectionStore.selected)
-    watch(() => selectionStore.selected.slice(), async (newVal, oldVal) => {
-      const newSet = new Set(newVal)
-      const oldSet = new Set(oldVal)
-      // 新增
-      for (const id of newSet) {
-        if (!oldSet.has(id)) {
-          await _renderSegmentById(id)
-        }
-      }
-      // 移除
-      for (const id of oldSet) {
-        if (!newSet.has(id)) {
-          if (trackService && trackService.renderer && typeof trackService.renderer.clearSegment === 'function') {
-            trackService.renderer.clearSegment(id)
-            console.debug('[MapView] clearSegment', id)
-          }
-        }
-      }
-    }, { immediate: true })
-
-    // 首次渲染所有已选分段
-    for (const id of selectionStore.selected) {
-      await _renderSegmentById(id)
-    }
+    await applyCurrentMode()
+    stopModeWatch = watch(() => [isLiveMode.value, liveDeviceId.value], () => {
+      applyCurrentMode().catch((e) => console.warn('[MapView] mode switch failed', e))
+    })
 
     // Pinia 非侵入式验证（仅用于确认 store 可用，不改 UI）
     try {
@@ -526,14 +847,75 @@ onMounted(async () => {
     console.error(err)
   }
 })
+
+onUnmounted(() => {
+  try { if (stopModeWatch) stopModeWatch() } catch (e) {}
+  stopModeWatch = null
+  try { if (stopSelectionWatch) stopSelectionWatch() } catch (e) {}
+  stopSelectionWatch = null
+  stopLiveMode({ clearMap: false })
+  _clearSegmentMarkers()
+})
 </script>
 
 <style scoped>
 .map-container { position: relative; height: 100vh; width: 100vw; }
 .map { height: 100%; width: 100%; }
+.live-status-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2000;
+  box-sizing: border-box;
+  max-width: min(260px, calc(100vw - 24px));
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(33, 150, 243, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  color: #111;
+  font-size: 12px;
+  line-height: 1.45;
+  backdrop-filter: blur(8px);
+}
+.live-status-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: #1976d2;
+  font-size: 14px;
+  font-weight: 800;
+}
+.live-status-row {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  color: #555;
+}
+.live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9e9e9e;
+  flex: 0 0 auto;
+}
+.live-dot-live { background: #4caf50; }
+.live-dot-connecting,
+.live-dot-reconnecting,
+.live-dot-waiting { background: #ffb300; }
+.live-dot-disconnected,
+.live-dot-error { background: #f44336; }
 .map-controls { position: absolute; top: 12px; left: 12px; z-index: 2000; }
 .map-controls button { padding: 8px 10px; background: white; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; }
 .row { margin: 6px 0; }
 button { padding: 8px 10px; }
 code { user-select: all; }
+@media (max-width: 420px) {
+  .live-status-panel {
+    top: 10px;
+    left: 10px;
+    max-width: calc(100vw - 20px);
+    padding: 8px 10px;
+  }
+}
 </style>
