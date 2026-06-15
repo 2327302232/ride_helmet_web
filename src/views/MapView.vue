@@ -30,6 +30,7 @@ const LIVE_GAP_MS = 30 * 60 * 1000
 const LIVE_INITIAL_WINDOW_MS = 30 * 60 * 1000
 const LIVE_FETCH_LIMIT = 5000
 const LIVE_RECONNECT_MS = 1500
+const LIVE_POLL_MS = 3000
 const CHINA_TZ_OFFSET_MS = 8 * 60 * 60 * 1000
 
 function firstQueryValue(value) {
@@ -105,6 +106,7 @@ let stopSelectionWatch = null
 let stopModeWatch = null
 let liveWs = null
 let liveReconnectTimer = null
+let livePollTimer = null
 let liveStopped = true
 let liveSessionId = 0
 let liveLastTs = null
@@ -603,6 +605,35 @@ async function backfillLiveGap(sessionId) {
   }
 }
 
+async function pollLiveTrack(sessionId) {
+  if (!trackService || liveStopped || sessionId !== liveSessionId) return
+  try {
+    const from = liveLastTs === null ? Date.now() - LIVE_INITIAL_WINDOW_MS : liveLastTs + 1
+    const rawPoints = await fetchTrackPoints({
+      deviceId: liveDeviceId.value,
+      from,
+      limit: LIVE_FETCH_LIMIT
+    })
+    if (liveStopped || sessionId !== liveSessionId) return
+    const { cleanPoints } = segmentTrack(rawPoints, LIVE_GAP_MS)
+    for (const point of cleanPoints) {
+      await appendLivePoint(point, sessionId)
+    }
+  } catch (e) {
+    console.warn('[MapView] live poll failed', e)
+  }
+}
+
+function scheduleLivePoll(sessionId) {
+  if (liveStopped || sessionId !== liveSessionId) return
+  try { if (livePollTimer) clearTimeout(livePollTimer) } catch (e) {}
+  livePollTimer = setTimeout(async () => {
+    livePollTimer = null
+    await pollLiveTrack(sessionId)
+    scheduleLivePoll(sessionId)
+  }, LIVE_POLL_MS)
+}
+
 function scheduleLiveReconnect(sessionId) {
   if (liveStopped || sessionId !== liveSessionId) return
   liveStatus.value = 'reconnecting'
@@ -660,7 +691,9 @@ function stopLiveMode({ clearMap = true } = {}) {
   liveStopped = true
   liveSessionId += 1
   try { if (liveReconnectTimer) clearTimeout(liveReconnectTimer) } catch (e) {}
+  try { if (livePollTimer) clearTimeout(livePollTimer) } catch (e) {}
   liveReconnectTimer = null
+  livePollTimer = null
   try {
     if (liveWs) {
       liveWs.onopen = null
@@ -703,6 +736,7 @@ async function startLiveMode() {
   liveSessionId = sessionId
   await renderInitialLiveTrack(sessionId)
   connectLiveWs(sessionId)
+  scheduleLivePoll(sessionId)
 }
 
 function startSelectionRendering() {
