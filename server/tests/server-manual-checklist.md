@@ -17,7 +17,7 @@ npm run start
 3) 使用 sqlite3 验证数据写入（示例命令，手动运行）：
 
 ```
-sqlite3 server/data/tracks.sqlite "SELECT device_id, ts, lng, lat FROM gps_points ORDER BY ts DESC LIMIT 10;"
+sqlite3 server/data/tracks.sqlite "SELECT device_id, ts, lng, lat FROM helmet_telemetry ORDER BY ts DESC LIMIT 10;"
 sqlite3 server/data/tracks.sqlite "SELECT cmd_id, device_id, status, ts FROM device_commands ORDER BY ts DESC LIMIT 10;"
 ```
 

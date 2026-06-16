@@ -119,7 +119,7 @@ sqlite3 server/data/tracks.sqlite "SELECT cmd_id, device_id, status, ts, sent_ts
 示例 sqlite3 查询（仅示例，手动在 server 目录下使用 sqlite3 CLI 或 DB 浏览器运行）：
 
 ```
-sqlite3 server/data/tracks.sqlite "SELECT * FROM gps_points ORDER BY ts DESC LIMIT 10;"
+sqlite3 server/data/tracks.sqlite "SELECT * FROM helmet_telemetry ORDER BY ts DESC LIMIT 10;"
 sqlite3 server/data/tracks.sqlite "SELECT * FROM device_commands ORDER BY ts DESC LIMIT 10;"
 ```
 

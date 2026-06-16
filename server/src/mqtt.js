@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertGpsPoint, insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd, insertHelmetTelemetry, upsertHelmetTelemetryCurrent, insertCollisionEvent } from './db.js';
+import { insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd, insertHelmetTelemetry, upsertHelmetTelemetryCurrent, insertCollisionEvent } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -245,8 +245,6 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
   const lng = telemetry.lng;
   const lat = telemetry.lat;
 
-  const hasCoords = Number.isFinite(lng) && Number.isFinite(lat);
-
   try {
     insertHelmetTelemetry(telemetry);
     upsertHelmetTelemetryCurrent(telemetry);
@@ -273,32 +271,6 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
     }
   }
 
-  if (hasCoords) {
-    try {
-      const insertRes = insertGpsPoint({
-        deviceId,
-        ts,
-        lng,
-        lat,
-        speed: telemetry.speed,
-        heading: telemetry.heading,
-        altitude: telemetry.altitude,
-        accuracy: telemetry.accuracy,
-        locationSource: telemetry.locationSource,
-        battery: telemetry.battery,
-        status: payloadObj.status ?? 'ok',
-        source: 'mqtt',
-        rawJson: JSON.stringify(payloadObj),
-        createdAt: Date.now()
-      });
-      emitter.emit('telemetry', { ...telemetry, raw: payloadObj });
-      return insertRes;
-    } catch (err) {
-      emitter.emit('error', { error: err, context: { deviceId, topic } });
-      return;
-    }
-  }
-
   emitter.emit('telemetry', { ...telemetry, raw: payloadObj });
 }
 
@@ -306,18 +278,6 @@ async function handleEvent(deviceId, eventType, payloadObj, topic) {
   if (!payloadObj || payloadObj.__parseError) {
     emitter.emit('error', { error: payloadObj && payloadObj.__parseError ? payloadObj.__parseError : new Error('Empty event payload'), context: { topic } });
     return;
-  }
-
-  // 若事件包含坐标，可写入 gps_points
-  const lng = Number(payloadObj.lng ?? payloadObj.lon ?? null);
-  const lat = Number(payloadObj.lat ?? payloadObj.lat ?? null);
-  const hasCoords = Number.isFinite(lng) && Number.isFinite(lat);
-  if (hasCoords) {
-    try {
-      insertGpsPoint({ deviceId, ts: payloadObj.ts ?? Date.now(), lng, lat, locationSource: readLocationSource(payloadObj, eventType || topic), rawJson: JSON.stringify(payloadObj), source: 'mqtt-event', createdAt: Date.now() });
-    } catch (e) {
-      emitter.emit('error', { error: e, context: { deviceId, eventType } });
-    }
   }
 
   // 若为 GNSS 事件且包含状态/报错信息，则写入 status 表（便于查询与告警）

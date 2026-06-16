@@ -249,7 +249,7 @@ watch(() => selectionStore.selected.slice(), ...)
 ```text
 设备 MQTT telemetry
   -> 后端 mqtt.js
-  -> 写入 SQLite gps_points
+  -> 写入 SQLite helmet_telemetry
   -> WebSocket broadcast
   -> Map 实时显示
 ```
@@ -401,7 +401,7 @@ ingress:
 
 设备通过 MQTT 发 telemetry 给 broker。后端 `server/src/mqtt.js` 订阅 MQTT topic，解析 payload 后写数据库：
 
-- 有坐标时写入 `gps_points`
+- 写入 `helmet_telemetry`，有坐标时可作为轨迹点读取
 - 同时写入/更新 `helmet_telemetry`、`helmet_telemetry_current`
 - 然后通过内部 EventEmitter 发出 `telemetry` 事件
 

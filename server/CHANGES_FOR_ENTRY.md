@@ -10,7 +10,7 @@
 - `CHANGES_FOR_ENTRY.md`：当前变更说明（本文件）。
 
 探测阶段发现（依据 `server/src/db.js` 与 `server/src/mqtt.js`）：
-- `server/src/db.js` 导出：`initDb`（async）、`insertGpsPoint`、`listDevices`、`getTrack`、`addDeviceCommand`、`updateCommandStatus`、`getPendingCommands`，并导出 `db` 变量。
+- `server/src/db.js` 导出：`initDb`（async）、`insertHelmetTelemetry`、`listDevices`、`getTrack`、`addDeviceCommand`、`updateCommandStatus`、`getPendingCommands`，并导出 `db` 变量。
   - 说明：`db` 为 `better-sqlite3` 的实例变量；模块未单独导出 `close`/`stop` 函数，但可在调用方通过导入的 `db` 并执行 `db.close()` 来关闭数据库（`better-sqlite3` 的 `close()` 为同步方法）。因此未修改 `db.js`。
 - `server/src/mqtt.js` 导出：`startMqtt()`、`stopMqtt()`、`publishCommand()`、`on()`、`mqttEmitter`。可直接用于启动与停止 MQTT 客户端，模块在连接/订阅时会打印日志。
 

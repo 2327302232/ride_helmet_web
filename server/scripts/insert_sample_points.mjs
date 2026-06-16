@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initDb, insertGpsPoint } from '../src/db.js'
+import { initDb, insertHelmetTelemetry } from '../src/db.js'
 
 async function main() {
   await initDb()
@@ -22,7 +22,7 @@ async function main() {
 
   for (const p of points) {
     try {
-      const res = insertGpsPoint({ deviceId, ts: p.ts, lng: p.lng, lat: p.lat, speed: p.speed, battery: p.battery, status: 'ok', source: 'script', rawJson: JSON.stringify(p), createdAt: Date.now() })
+      const res = insertHelmetTelemetry({ deviceId, ts: p.ts, lng: p.lng, lat: p.lat, speed: p.speed, battery: p.battery, source: 'script', rawJson: JSON.stringify(p), createdAt: Date.now() })
       console.log('inserted', p, '->', res)
     } catch (e) {
       console.error('insert failed', e && e.message ? e.message : e)

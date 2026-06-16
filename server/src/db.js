@@ -3,17 +3,17 @@
  * SQLite helper for the backend. Provides initDb and DB operations used by mqtt/http layers.
  *
  * Usage example:
- * import { initDb, insertGpsPoint, addDeviceCommand } from './db.js';
+ * import { initDb, insertHelmetTelemetry, addDeviceCommand } from './db.js';
  * await initDb();
- * insertGpsPoint({ deviceId: 'dev-001', ts: Date.now(), lng: 116.3, lat: 39.9 });
+ * insertHelmetTelemetry({ deviceId: 'dev-001', ts: Date.now(), lng: 116.3, lat: 39.9 });
  * addDeviceCommand({ cmdId: 'uuid-1', deviceId: 'dev-001', ts: Date.now(), type: 'cmd', action: 'beep', valueJson: '{}' });
  *
  * 测试验证指引（在终端手动执行）：
  * 1) 确保在 server 目录依赖已安装（better-sqlite3）。
  * 2) 在 Node 中运行：
- *    import { initDb, insertGpsPoint, listDevices, getTrack, addDeviceCommand, updateCommandStatus } from './src/db.js';
+ *    import { initDb, insertHelmetTelemetry, listDevices, getTrack, addDeviceCommand, updateCommandStatus } from './src/db.js';
  *    await initDb();
- *    insertGpsPoint({ deviceId: 'dev-001', ts: Date.now(), lng: 116.3, lat: 39.9 });
+ *    insertHelmetTelemetry({ deviceId: 'dev-001', ts: Date.now(), lng: 116.3, lat: 39.9 });
  *    console.log(await listDevices());
  *    console.log(await getTrack({ deviceId: 'dev-001' }));
  *    addDeviceCommand({ cmdId: 'uuid-1', deviceId: 'dev-001', ts: Date.now(), type: 'cmd', action: 'do', valueJson: '{}' });
@@ -66,13 +66,7 @@ export function verifyPassword(password, stored) {
 }
 
 function prepareStatements() {
-  stmts.insertGps = db.prepare(`INSERT INTO gps_points (device_id, ts, lng, lat, speed, heading, altitude, accuracy, location_source, battery, status, source, raw_json, created_at)
-    VALUES (@device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy, @location_source, @battery, @status, @source, @raw_json, @created_at)`);
-
-  stmts.listDevices = db.prepare(`SELECT device_id AS deviceId, MAX(ts) AS lastTs FROM gps_points GROUP BY device_id ORDER BY lastTs DESC LIMIT @limit`);
-
-  stmts.getTrackGps = db.prepare(`SELECT ts, lng, lat, speed, battery, status, location_source AS locationSource FROM gps_points
-    WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
+  stmts.listDevices = db.prepare(`SELECT device_id AS deviceId, MAX(ts) AS lastTs FROM helmet_telemetry GROUP BY device_id ORDER BY lastTs DESC LIMIT @limit`);
 
   stmts.getTrackHelmet = db.prepare(`SELECT
       ts,
@@ -280,7 +274,6 @@ export async function initDb(options = {}) {
         try { db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`); } catch (e) { console.warn(`Failed to add ${tableName}.${columnName}`, e && e.message ? e.message : e); }
       }
     };
-    ensureColumn('gps_points', 'location_source', 'TEXT');
     ensureColumn('helmet_telemetry', 'location_source', 'TEXT');
     ensureColumn('helmet_telemetry_current', 'location_source', 'TEXT');
 
@@ -303,7 +296,6 @@ export async function initDb(options = {}) {
         CREATE INDEX IF NOT EXISTS idx_cmd_device_status_ts ON device_commands(device_id, status, ts);
         CREATE INDEX IF NOT EXISTS idx_cmd_device_action_ts ON device_commands(device_id, action, ts);
         CREATE INDEX IF NOT EXISTS idx_status_device_status_ts ON status(device_id, status, ts);
-        CREATE INDEX IF NOT EXISTS idx_gps_created_at ON gps_points(created_at);
         CREATE INDEX IF NOT EXISTS idx_device_pending_requests_created ON device_pending_requests(created_at);
         CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
         DROP INDEX IF EXISTS idx_devices_device_id;
@@ -383,60 +375,6 @@ function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = n
     created_at: createdAt == null ? Date.now() : Number(createdAt),
     updated_at: updatedAt == null ? Date.now() : Number(updatedAt)
   };
-}
-
-/**
- * Insert a GPS point into gps_points.
- * @param {Object} param
- * @param {string} param.deviceId
- * @param {number} param.ts
- * @param {number} param.lng
- * @param {number} param.lat
- * @param {number} [param.speed]
- * @param {number} [param.heading]
- * @param {number} [param.altitude]
- * @param {number} [param.accuracy]
- * @param {string} [param.locationSource]
- * @param {number} [param.battery]
- * @param {string} [param.status]
- * @param {string} [param.source]
- * @param {string} [param.rawJson]
- * @param {number} [param.createdAt]
- * @returns {{lastInsertRowid:number,changes:number}} 返回插入信息。发生错误时抛出异常。
- */
-export function insertGpsPoint({ deviceId, ts, lng, lat, speed = null, heading = null, altitude = null, accuracy = null, locationSource = null, battery = null, status = 'ok', source = 'raw', rawJson = null, createdAt = null } = {}) {
-  if (!db) throw new Error('Database not initialized. Call initDb() first.');
-  if (!deviceId || ts == null || lng == null || lat == null) {
-    throw new Error('Missing required fields: deviceId, ts, lng, lat');
-  }
-  try {
-    const info = stmts.insertGps.run({
-      device_id: String(deviceId),
-      ts: Number(ts),
-      lng: Number(lng),
-      lat: Number(lat),
-      speed: speed == null ? null : Number(speed),
-      heading: heading == null ? null : Number(heading),
-      altitude: altitude == null ? null : Number(altitude),
-      accuracy: accuracy == null ? null : Number(accuracy),
-      location_source: normalizeLocationSource(locationSource),
-      battery: battery == null ? null : Number(battery),
-      status: status == null ? 'ok' : String(status),
-      source: source == null ? 'raw' : String(source),
-      raw_json: rawJson == null ? null : String(rawJson),
-      created_at: createdAt == null ? null : Number(createdAt)
-    });
-    // 尝试为该设备在 device_sequences 表上递增序号（容错，不阻塞主流程）
-    try {
-      const seqRes = incDeviceSequence({ tableName: 'gps_points', deviceId: String(deviceId), delta: 1 });
-      return { lastInsertRowid: info.lastInsertRowid, changes: info.changes, seq: seqRes.seq };
-    } catch (e) {
-      console.warn('[DB] incDeviceSequence failed for gps_points', e && e.message ? e.message : e);
-      return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
-    }
-  } catch (err) {
-    throw err;
-  }
 }
 
 /**
@@ -649,18 +587,12 @@ export function getTrack({ deviceId, from = 0, to = Number.MAX_SAFE_INTEGER, lim
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   if (!deviceId) throw new Error('deviceId is required.');
   const params = { device_id: String(deviceId), from: Number(from), to: Number(to), limit: Number(limit) };
-  // Map 页面需要每个轨迹点携带头盔传感器数据；优先读取 helmet_telemetry。
-  // 若没有新表数据，则 fallback 到旧 gps_points，保证历史轨迹仍可显示。
   const helmetRows = stmts.getTrackHelmet.all(params);
-  if (helmetRows && helmetRows.length > 0) {
-    return helmetRows.map((row) => ({
-      ...row,
-      collision: !!row.collision,
-      lowPower: row.lowPower == null ? null : !!row.lowPower
-    }));
-  }
-  const rows = stmts.getTrackGps.all(params);
-  return rows;
+  return (helmetRows || []).map((row) => ({
+    ...row,
+    collision: !!row.collision,
+    lowPower: row.lowPower == null ? null : !!row.lowPower
+  }));
 }
 
 /**
