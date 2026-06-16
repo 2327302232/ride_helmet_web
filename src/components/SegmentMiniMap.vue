@@ -10,6 +10,9 @@ import { loadAmapSdk, initMap, addPolyline, createMarker } from '../utils/amap.j
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
+  alertPoint: { type: Object, default: null },
+  alertRadius: { type: Number, default: 80 },
+  alertLabel: { type: String, default: 'SOS' },
   height: { type: [Number, String], default: 180 },
   // paddingZoom: how much to *zoom out* after fitting the path so there's breathing room.
   // Default 0.8 will slightly zoom out to ensure the path isn't flush to the edges.
@@ -19,6 +22,15 @@ const props = defineProps({
 const container = ref(null)
 let map = null
 let polyline = null
+
+function normalizePoint(point) {
+  if (!point) return null
+  const lng = Number(point.lng ?? point.lon ?? point.longitude)
+  const lat = Number(point.lat ?? point.latitude)
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null
+  if (lng < -180 || lng > 180 || lat < -90 || lat > 90) return null
+  return { ...point, lng, lat }
+}
 
 function clearMapOverlays() {
   try {
@@ -42,10 +54,15 @@ async function renderMini() {
       try { map.clearMap() } catch (e) { /* ignore */ }
     }
 
-    const pts = (props.points || []).filter(p => p && p.lng != null && p.lat != null)
-    if (!pts || pts.length === 0) return
+    const pts = (props.points || []).map(normalizePoint).filter(Boolean)
+    const alertPoint = normalizePoint(props.alertPoint)
+    if ((!pts || pts.length === 0) && !alertPoint) return
     const path = pts.map(p => [Number(p.lng), Number(p.lat)])
-    polyline = addPolyline(map, path, { strokeColor: '#ff8800', strokeWeight: 3 })
+    const fitOverlays = []
+    if (path.length > 1) {
+      polyline = addPolyline(map, path, { strokeColor: '#ff8800', strokeWeight: 3 })
+      fitOverlays.push(polyline)
+    }
 
     // draw point markers: start, end, and intermediate small points (no click handlers)
     try {
@@ -55,15 +72,21 @@ async function renderMini() {
         const html = `<div style="width:14px;height:14px;border-radius:50%;background:#2ecc71;border:2px solid #ffffff;box-shadow:0 0 4px rgba(0,0,0,0.12)"></div>`
         const opts = { content: html }
         if (typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') opts.offset = new window.AMap.Pixel(-7, -7)
-        try { createMarker(map, [Number(s.lng), Number(s.lat)], opts) } catch (e) { /* ignore */ }
+        try {
+          const m = createMarker(map, [Number(s.lng), Number(s.lat)], opts)
+          if (m) fitOverlays.push(m)
+        } catch (e) { /* ignore */ }
       }
       // end marker
       const e = pts[pts.length - 1]
-      if (e) {
+      if (e && pts.length > 1) {
         const html2 = `<div style="width:14px;height:14px;border-radius:50%;background:#e74c3c;border:2px solid #ffffff;box-shadow:0 0 4px rgba(0,0,0,0.12)"></div>`
         const opts2 = { content: html2 }
         if (typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') opts2.offset = new window.AMap.Pixel(-7, -7)
-        try { createMarker(map, [Number(e.lng), Number(e.lat)], opts2) } catch (err) { /* ignore */ }
+        try {
+          const m = createMarker(map, [Number(e.lng), Number(e.lat)], opts2)
+          if (m) fitOverlays.push(m)
+        } catch (err) { /* ignore */ }
       }
       // intermediate points
       if (pts.length > 2) {
@@ -78,19 +101,47 @@ async function renderMini() {
       }
     } catch (e) { /* ignore marker failures */ }
 
+    if (alertPoint) {
+      try {
+        const center = [Number(alertPoint.lng), Number(alertPoint.lat)]
+        if (window.AMap && typeof window.AMap.Circle === 'function') {
+          const circle = new window.AMap.Circle({
+            center,
+            radius: Number(props.alertRadius) || 80,
+            strokeColor: '#d50000',
+            strokeWeight: 2,
+            strokeOpacity: 0.95,
+            fillColor: '#ff1744',
+            fillOpacity: 0.16,
+            zIndex: 120
+          })
+          map.add(circle)
+          fitOverlays.push(circle)
+        }
+        const html = `<div style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:#d50000;color:#fff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(213,0,0,0.18),0 4px 12px rgba(0,0,0,0.28);font-size:10px;font-weight:800;line-height:1">${String(props.alertLabel || 'SOS')}</div>`
+        const opts = { content: html, zIndex: 130 }
+        if (typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') opts.offset = new window.AMap.Pixel(-17, -17)
+        const marker = createMarker(map, center, opts)
+        if (marker) fitOverlays.push(marker)
+      } catch (e) {
+        console.warn('SegmentMiniMap alert marker failed', e)
+      }
+    }
+
       try {
         const PIXEL_PADDING = 10
-        if (map && typeof map.setFitView === 'function') {
+        if (map && typeof map.setFitView === 'function' && fitOverlays.length) {
           // try to use AMap's padding support (either array [l,t,r,b] or single number)
           try {
-            map.setFitView([polyline], [PIXEL_PADDING, PIXEL_PADDING, PIXEL_PADDING, PIXEL_PADDING])
+            map.setFitView(fitOverlays, [PIXEL_PADDING, PIXEL_PADDING, PIXEL_PADDING, PIXEL_PADDING])
           } catch (e1) {
-            try { map.setFitView([polyline], PIXEL_PADDING) } catch (e2) { map.setFitView([polyline]) }
+            try { map.setFitView(fitOverlays, PIXEL_PADDING) } catch (e2) { map.setFitView(fitOverlays) }
           }
         } else {
           // fallback bbox (best-effort): compute center and pick zoom by bbox heuristics
+          const bboxPath = path.length ? path : (alertPoint ? [[alertPoint.lng, alertPoint.lat]] : [])
           let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity
-          for (const pt of path) {
+          for (const pt of bboxPath) {
             const lng = Number(pt[0]), lat = Number(pt[1])
             if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue
             if (lng < minLng) minLng = lng
@@ -126,6 +177,7 @@ async function renderMini() {
 
 onMounted(() => { renderMini() })
 watch(() => props.points, () => { renderMini() }, { deep: true })
+watch(() => props.alertPoint, () => { renderMini() }, { deep: true })
 onUnmounted(() => {
   try { clearMapOverlays() } catch (e) { /* ignore */ }
   try { if (map && typeof map.destroy === 'function') map.destroy() } catch (e) { /* ignore */ }

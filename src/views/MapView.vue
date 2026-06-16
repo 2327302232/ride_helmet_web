@@ -39,6 +39,20 @@ function firstQueryValue(value) {
 
 const isLiveMode = computed(() => firstQueryValue(route.query.mode) === 'live')
 const liveDeviceId = computed(() => String(firstQueryValue(route.query.deviceId) || 'dev-001'))
+const sosQueryPoint = computed(() => {
+  if (firstQueryValue(route.query.sos) !== '1') return null
+  const lng = Number(firstQueryValue(route.query.sosLng))
+  const lat = Number(firstQueryValue(route.query.sosLat))
+  const tsRaw = firstQueryValue(route.query.sosTs)
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null
+  if (lng < -180 || lng > 180 || lat < -90 || lat > 90) return null
+  return {
+    deviceId: liveDeviceId.value,
+    lng,
+    lat,
+    ts: normalizeLiveTs(tsRaw || Date.now())
+  }
+})
 const liveStatus = ref('idle')
 const liveLastTsRef = ref(null)
 const livePointCount = ref(0)
@@ -114,6 +128,8 @@ const liveSeen = new Set()
 let livePoints = []
 let livePolyline = null
 let liveMarkers = []
+let sosCircle = null
+let sosMarker = null
 
 async function getLocationDiagnostics(extra = {}) {
   const info = {
@@ -385,6 +401,70 @@ function makeLiveMarkerHtml(style = {}) {
   return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:${borderWidth}px solid ${border};box-shadow:0 0 4px rgba(0,0,0,0.12)"></div>`
 }
 
+function makeSosMarkerHtml() {
+  return '<div style="display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#d50000;color:#fff;border:3px solid #fff;box-shadow:0 0 0 8px rgba(213,0,0,0.18),0 5px 16px rgba(0,0,0,0.32);font-size:11px;font-weight:900;line-height:1">SOS</div>'
+}
+
+function clearSosOverlay() {
+  try { if (sosCircle && typeof sosCircle.setMap === 'function') sosCircle.setMap(null) } catch (e) {}
+  try { if (sosMarker && typeof sosMarker.setMap === 'function') sosMarker.setMap(null) } catch (e) {}
+  sosCircle = null
+  sosMarker = null
+}
+
+function fitSosWithLiveLayers() {
+  try {
+    if (!map || typeof map.setFitView !== 'function') return
+    const overlays = []
+    if (livePolyline) overlays.push(livePolyline)
+    if (sosCircle) overlays.push(sosCircle)
+    if (sosMarker) overlays.push(sosMarker)
+    if (Array.isArray(liveMarkers) && liveMarkers.length) {
+      const first = liveMarkers[0]
+      const last = liveMarkers[liveMarkers.length - 1]
+      if (first) overlays.push(first)
+      if (last && last !== first) overlays.push(last)
+    }
+    if (overlays.length) map.setFitView(overlays)
+  } catch (e) {
+    const point = sosQueryPoint.value
+    try {
+      if (point && map) {
+        map.setCenter([point.lng, point.lat])
+        map.setZoom(17)
+      }
+    } catch (err) {}
+  }
+}
+
+function renderSosOverlay({ fit = false } = {}) {
+  clearSosOverlay()
+  const point = sosQueryPoint.value
+  if (!point || !map || !window.AMap) return
+  const center = [Number(point.lng), Number(point.lat)]
+  try {
+    if (typeof window.AMap.Circle === 'function') {
+      sosCircle = new window.AMap.Circle({
+        center,
+        radius: 90,
+        strokeColor: '#d50000',
+        strokeOpacity: 0.95,
+        strokeWeight: 3,
+        fillColor: '#ff1744',
+        fillOpacity: 0.16,
+        zIndex: 120
+      })
+      map.add(sosCircle)
+    }
+    const opts = { content: makeSosMarkerHtml(), zIndex: 130 }
+    if (typeof window.AMap.Pixel === 'function') opts.offset = new window.AMap.Pixel(-21, -21)
+    sosMarker = createMarker(map, center, opts)
+    if (fit) fitSosWithLiveLayers()
+  } catch (e) {
+    console.warn('[MapView] render SOS overlay failed', e)
+  }
+}
+
 function liveMarkerStyle(index, total) {
   if (total <= 1) return { size: 14, color: '#e74c3c', borderWidth: 2 }
   if (index === 0) return { size: 14, color: '#2ecc71', borderWidth: 2 }
@@ -542,6 +622,7 @@ async function renderInitialLiveTrack(sessionId) {
       clearLiveLayers()
       try { trackService.clearTrack() } catch (e) {}
       liveStatus.value = 'waiting'
+      renderSosOverlay({ fit: true })
       return
     }
     const points = latest.points
@@ -551,12 +632,14 @@ async function renderInitialLiveTrack(sessionId) {
     liveLastTsRef.value = lastPoint.ts
     livePointCount.value = points.length
     renderLiveTrack(points, { fit: true })
+    renderSosOverlay({ fit: true })
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'live'
   } catch (e) {
     console.warn('[MapView] initial live track failed', e)
     clearLiveLayers()
     try { if (trackService) trackService.clearTrack() } catch (err) {}
     resetLivePointState()
+    renderSosOverlay({ fit: true })
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'waiting'
   }
 }
@@ -722,6 +805,7 @@ async function startLiveMode() {
   }
   _clearSegmentMarkers()
   clearLiveLayers()
+  clearSosOverlay()
   try {
     if (trackService.renderer && typeof trackService.renderer.clearAll === 'function') trackService.renderer.clearAll()
     trackService.clearTrack()
@@ -736,6 +820,7 @@ async function startLiveMode() {
   const sessionId = liveSessionId + 1
   liveSessionId = sessionId
   await renderInitialLiveTrack(sessionId)
+  renderSosOverlay({ fit: true })
   connectLiveWs(sessionId)
   scheduleLivePoll(sessionId)
 }
@@ -785,6 +870,7 @@ async function startNormalMode() {
   }
   _clearSegmentMarkers()
   clearLiveLayers()
+  clearSosOverlay()
   await ensureBrowserLocation()
   startSelectionRendering()
 }
@@ -1041,6 +1127,10 @@ onMounted(async () => {
     stopModeWatch = watch(() => [isLiveMode.value, liveDeviceId.value], () => {
       applyCurrentMode().catch((e) => console.warn('[MapView] mode switch failed', e))
     })
+    watch(() => [route.query.sos, route.query.sosLng, route.query.sosLat, route.query.sosTs], () => {
+      if (isLiveMode.value) renderSosOverlay({ fit: true })
+      else clearSosOverlay()
+    })
 
     // Pinia 非侵入式验证（仅用于确认 store 可用，不改 UI）
     try {
@@ -1061,6 +1151,7 @@ onUnmounted(() => {
   try { if (stopSelectionWatch) stopSelectionWatch() } catch (e) {}
   stopSelectionWatch = null
   stopLiveMode({ clearMap: false })
+  clearSosOverlay()
   _clearSegmentMarkers()
 })
 </script>

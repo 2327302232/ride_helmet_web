@@ -219,6 +219,10 @@ async function start() {
       console.log('[MQTT EVENT] status', JSON.stringify(s));
       try { if (s && s.deviceId) broadcastToDevice(s.deviceId, { type: 'status', payload: s }); } catch (e) {}
     });
+    onMqtt('sos', (s) => {
+      console.log('[MQTT EVENT] sos', JSON.stringify(s));
+      try { if (s && s.deviceId) broadcastToDevice(s.deviceId, { type: 'sos', payload: s }); } catch (e) {}
+    });
     onMqtt('event', (e) => console.log('[MQTT EVENT] event', JSON.stringify(e)));
     onMqtt('error', (err) => console.error('[MQTT EVENT] error', err && err.error ? err.error : err));
 

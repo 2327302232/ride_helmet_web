@@ -188,6 +188,23 @@ function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt', topic 
   };
 }
 
+function makeSosPayloadFromTelemetry(telemetry = {}, payloadObj = {}, eventType = 'collision') {
+  return {
+    deviceId: telemetry.deviceId,
+    eventType: eventType || 'collision',
+    ts: telemetry.ts,
+    lng: telemetry.lng,
+    lat: telemetry.lat,
+    speed: telemetry.speed,
+    locationSource: telemetry.locationSource,
+    level: telemetry.collisionLevel,
+    score: telemetry.collisionScore,
+    message: payloadObj && payloadObj.message ? String(payloadObj.message) : 'collision detected',
+    source: telemetry.source || 'mqtt',
+    raw: payloadObj || null
+  };
+}
+
 function clearAckTimer(cmdId) {
   try {
     const t = ackTimers.get(cmdId);
@@ -253,6 +270,7 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
   }
 
   if (telemetry.collision) {
+    const sosPayload = makeSosPayloadFromTelemetry(telemetry, payloadObj, 'collision');
     try {
       insertCollisionEvent({
         deviceId,
@@ -269,6 +287,7 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
     } catch (err) {
       emitter.emit('error', { error: err, context: { where: 'insert collision event', deviceId, topic } });
     }
+    emitter.emit('sos', sosPayload);
   }
 
   emitter.emit('telemetry', { ...telemetry, raw: payloadObj });
@@ -289,6 +308,39 @@ async function handleEvent(deviceId, eventType, payloadObj, topic) {
     } catch (e) {
       emitter.emit('error', { error: e, context: { deviceId, eventType } });
     }
+  }
+
+  if (['collision', 'crash', 'impact', 'fall', 'sos'].includes(String(eventType || '').toLowerCase())) {
+    const telemetry = normalizeTelemetryPayload(deviceId, payloadObj, 'mqtt-event', topic);
+    const collisionTelemetry = {
+      ...telemetry,
+      collision: true,
+      collisionLevel: telemetry.collisionLevel ?? payloadObj.level ?? eventType,
+      collisionScore: telemetry.collisionScore
+    };
+    const sosPayload = makeSosPayloadFromTelemetry(collisionTelemetry, payloadObj, eventType || 'collision');
+    try {
+      insertCollisionEvent({
+        deviceId,
+        ts: collisionTelemetry.ts,
+        level: collisionTelemetry.collisionLevel,
+        score: collisionTelemetry.collisionScore,
+        lng: collisionTelemetry.lng,
+        lat: collisionTelemetry.lat,
+        speed: collisionTelemetry.speed,
+        message: payloadObj.message ?? 'collision detected',
+        rawJson: JSON.stringify(payloadObj),
+        createdAt: Date.now()
+      });
+    } catch (err) {
+      emitter.emit('error', { error: err, context: { where: 'insert collision event', deviceId, topic } });
+    }
+    try {
+      upsertHelmetTelemetryCurrent(collisionTelemetry);
+    } catch (err) {
+      emitter.emit('error', { error: err, context: { where: 'upsert collision current telemetry', deviceId, topic } });
+    }
+    emitter.emit('sos', sosPayload);
   }
 
   emitter.emit('event', { deviceId, eventType: eventType || null, raw: payloadObj });
