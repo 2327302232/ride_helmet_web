@@ -353,6 +353,7 @@ function normalizeLivePoint(payload) {
     ts,
     lng,
     lat,
+    locationSource: firstDefined(payload.locationSource, payload.location_source, raw.location_source, raw.locationSource, raw.loc_source, raw.locSource, raw.loc_type, raw.locType, raw.positioning),
     speed: firstDefined(payload.speed, raw.speed, raw.spd),
     battery: firstDefined(payload.battery, raw.battery, raw.bat)
   }

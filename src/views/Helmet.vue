@@ -54,7 +54,7 @@
           <div class="sensor-value">{{ formatValue(sensor.temperature, ' ℃') }}</div>
         </div>
         <div class="sensor-card gps-card">
-          <div class="sensor-label">GPS</div>
+          <div class="sensor-label">GPS（{{ locationSourceLabel }}）</div>
           <div class="gps-card-body">
             <div class="sensor-value sensor-small gps-position">{{ formatGps(sensor.lng, sensor.lat) }}</div>
             <button class="gps-action-btn" type="button" :disabled="powerSaveUnavailable || !deviceId" @click="goLiveLocation">查看实时定位</button>
@@ -107,6 +107,7 @@ const sensor = ref({
   collision: false,
   collisionLevel: null,
   collisionScore: null,
+  locationSource: null,
   battery: null,
   lowPower: null
 })
@@ -135,6 +136,7 @@ const selectedDeviceLabel = computed(() => {
   if (devicesList.value.length > 0) return '选择设备'
   return '无设备'
 })
+const locationSourceLabel = computed(() => formatLocationSource(sensor.value.locationSource))
 
 function toggleDevices() {
   if (!devicesList.value || devicesList.value.length === 0) return
@@ -290,6 +292,15 @@ function formatGps(lng, lat) {
   return `${x.toFixed(6)}, ${y.toFixed(6)}`
 }
 
+function formatLocationSource(v) {
+  if (v === undefined || v === null || v === '') return '未知'
+  const s = String(v).trim().toLowerCase()
+  if (!s) return '未知'
+  if (s === 'gnss' || s === 'gps') return 'GNSS'
+  if (s === 'lbs' || s === 'cell' || s === 'cellular' || s === 'base_station' || s === 'basestation') return 'LBS'
+  return String(v).toUpperCase()
+}
+
 function normalizeBool(v) {
   if (v === true || v === 1 || v === '1') return true
   if (v === false || v === 0 || v === '0') return false
@@ -324,6 +335,7 @@ function applyTelemetry(payload) {
     ts: payload.ts ?? raw.ts ?? sensor.value.ts,
     lng: payload.lng ?? raw.lng ?? raw.lon ?? raw.longitude ?? sensor.value.lng,
     lat: payload.lat ?? raw.lat ?? raw.latitude ?? sensor.value.lat,
+    locationSource: payload.locationSource ?? payload.location_source ?? raw.location_source ?? raw.locationSource ?? raw.loc_source ?? raw.locSource ?? raw.loc_type ?? raw.locType ?? raw.positioning ?? sensor.value.locationSource,
     speed: payload.speed ?? raw.speed ?? raw.spd ?? sensor.value.speed,
     heartRate: payload.heartRate ?? payload.heart_rate ?? raw.heart_rate ?? raw.heartRate ?? raw.hr ?? raw.bpm ?? sensor.value.heartRate,
     temperature: payload.temperature ?? raw.temperature ?? raw.temp ?? raw.t ?? sensor.value.temperature,

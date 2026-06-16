@@ -110,7 +110,40 @@ function toBool(v) {
   return !!v;
 }
 
-function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt') {
+function normalizeLocationSource(value, topic = '') {
+  const raw = firstDefined(value);
+  let s = raw == null ? '' : String(raw).trim().toLowerCase();
+  if (!s && topic) {
+    const parts = String(topic).toLowerCase().split('/').filter(Boolean);
+    if (parts.includes('gnss')) s = 'gnss';
+    else if (parts.includes('lbs')) s = 'lbs';
+  }
+  if (!s) return null;
+  if (s === 'gps') return 'gnss';
+  if (s === 'cell' || s === 'cellular' || s === 'base_station' || s === 'basestation') return 'lbs';
+  if (s === 'gnss' || s === 'lbs') return s;
+  return s;
+}
+
+function readLocationSource(payloadObj = {}, topic = '') {
+  return normalizeLocationSource(firstDefined(
+    payloadObj.location_source,
+    payloadObj.locationSource,
+    payloadObj.loc_source,
+    payloadObj.locSource,
+    payloadObj.loc_type,
+    payloadObj.locType,
+    payloadObj.position_source,
+    payloadObj.positionSource,
+    payloadObj.positioning,
+    payloadObj.positioning_type,
+    payloadObj.positioningType,
+    payloadObj.gps_source,
+    payloadObj.gpsSource
+  ), topic);
+}
+
+function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt', topic = '') {
   const ts = payloadObj.ts != null ? Number(payloadObj.ts) : Date.now();
   const lng = toFiniteNumber(firstDefined(payloadObj.lng, payloadObj.lon, payloadObj.long, payloadObj.longitude));
   const lat = toFiniteNumber(firstDefined(payloadObj.lat, payloadObj.latitude));
@@ -128,6 +161,7 @@ function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt') {
   const battery = toFiniteNumber(firstDefined(payloadObj.battery, payloadObj.bat, payloadObj.battery_level, payloadObj.batteryLevel));
   const lowPowerRaw = firstDefined(payloadObj.low_power, payloadObj.lowPower, payloadObj.lowPowerMode);
   const lowPower = toBool(lowPowerRaw);
+  const locationSource = readLocationSource(payloadObj, topic);
 
   return {
     deviceId,
@@ -138,6 +172,7 @@ function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt') {
     heading,
     altitude,
     accuracy,
+    locationSource,
     heartRate,
     temperature,
     humidity,
@@ -205,7 +240,7 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
     return;
   }
 
-  const telemetry = normalizeTelemetryPayload(deviceId, payloadObj, 'mqtt');
+  const telemetry = normalizeTelemetryPayload(deviceId, payloadObj, 'mqtt', topic);
   const ts = telemetry.ts;
   const lng = telemetry.lng;
   const lat = telemetry.lat;
@@ -249,6 +284,7 @@ async function handleTelemetry(deviceId, payloadObj, topic) {
         heading: telemetry.heading,
         altitude: telemetry.altitude,
         accuracy: telemetry.accuracy,
+        locationSource: telemetry.locationSource,
         battery: telemetry.battery,
         status: payloadObj.status ?? 'ok',
         source: 'mqtt',
@@ -278,7 +314,7 @@ async function handleEvent(deviceId, eventType, payloadObj, topic) {
   const hasCoords = Number.isFinite(lng) && Number.isFinite(lat);
   if (hasCoords) {
     try {
-      insertGpsPoint({ deviceId, ts: payloadObj.ts ?? Date.now(), lng, lat, rawJson: JSON.stringify(payloadObj), source: 'mqtt-event', createdAt: Date.now() });
+      insertGpsPoint({ deviceId, ts: payloadObj.ts ?? Date.now(), lng, lat, locationSource: readLocationSource(payloadObj, eventType || topic), rawJson: JSON.stringify(payloadObj), source: 'mqtt-event', createdAt: Date.now() });
     } catch (e) {
       emitter.emit('error', { error: e, context: { deviceId, eventType } });
     }

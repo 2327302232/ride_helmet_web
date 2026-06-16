@@ -37,6 +37,7 @@
 
 可选字段：
 - `alt`、`speed`、`bearing`、`fix`、`hdop`
+- `location_source`：定位方式，填写 `gnss` 或 `lbs`；兼容字段名 `locationSource`
 - `battery`、`rssi`
 - `extra`（object，用于设备自定义扩展）
 
@@ -52,6 +53,7 @@
   "ts":1710000000000,
   "lat":31.2304,
   "lng":121.4737,
+  "location_source":"gnss",
   "speed":12.3,
   "bearing":90,
   "fix":3,

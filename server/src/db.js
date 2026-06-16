@@ -66,12 +66,12 @@ export function verifyPassword(password, stored) {
 }
 
 function prepareStatements() {
-  stmts.insertGps = db.prepare(`INSERT INTO gps_points (device_id, ts, lng, lat, speed, heading, altitude, accuracy, battery, status, source, raw_json, created_at)
-    VALUES (@device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy, @battery, @status, @source, @raw_json, @created_at)`);
+  stmts.insertGps = db.prepare(`INSERT INTO gps_points (device_id, ts, lng, lat, speed, heading, altitude, accuracy, location_source, battery, status, source, raw_json, created_at)
+    VALUES (@device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy, @location_source, @battery, @status, @source, @raw_json, @created_at)`);
 
   stmts.listDevices = db.prepare(`SELECT device_id AS deviceId, MAX(ts) AS lastTs FROM gps_points GROUP BY device_id ORDER BY lastTs DESC LIMIT @limit`);
 
-  stmts.getTrackGps = db.prepare(`SELECT ts, lng, lat, speed, battery, status FROM gps_points
+  stmts.getTrackGps = db.prepare(`SELECT ts, lng, lat, speed, battery, status, location_source AS locationSource FROM gps_points
     WHERE device_id = @device_id AND ts >= @from AND ts <= @to ORDER BY ts ASC LIMIT @limit`);
 
   stmts.getTrackHelmet = db.prepare(`SELECT
@@ -82,6 +82,7 @@ function prepareStatements() {
       heading,
       altitude,
       accuracy,
+      location_source AS locationSource,
       heart_rate AS heartRate,
       temperature,
       humidity,
@@ -120,26 +121,27 @@ function prepareStatements() {
 
   // helmet telemetry statements: GPS + 心率 + 碰撞 + 温湿度等传感器数据
   stmts.insertHelmetTelemetry = db.prepare(`INSERT INTO helmet_telemetry (
-      device_id, ts, lng, lat, speed, heading, altitude, accuracy,
+      device_id, ts, lng, lat, speed, heading, altitude, accuracy, location_source,
       heart_rate, temperature, humidity, collision, collision_level, collision_score,
       battery, low_power, source, raw_json, created_at
     ) VALUES (
-      @device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy,
+      @device_id, @ts, @lng, @lat, @speed, @heading, @altitude, @accuracy, @location_source,
       @heart_rate, @temperature, @humidity, @collision, @collision_level, @collision_score,
       @battery, @low_power, @source, @raw_json, @created_at
     )`);
 
   stmts.upsertHelmetTelemetryCurrent = db.prepare(`INSERT INTO helmet_telemetry_current (
-      device_id, ts, lng, lat, speed, heart_rate, temperature, humidity,
+      device_id, ts, lng, lat, speed, location_source, heart_rate, temperature, humidity,
       collision, collision_level, collision_score, battery, low_power, raw_json, updated_at
     ) VALUES (
-      @device_id, @ts, @lng, @lat, @speed, @heart_rate, @temperature, @humidity,
+      @device_id, @ts, @lng, @lat, @speed, @location_source, @heart_rate, @temperature, @humidity,
       @collision, @collision_level, @collision_score, @battery, @low_power, @raw_json, @updated_at
     ) ON CONFLICT(device_id) DO UPDATE SET
       ts = @ts,
       lng = @lng,
       lat = @lat,
       speed = @speed,
+      location_source = @location_source,
       heart_rate = @heart_rate,
       temperature = @temperature,
       humidity = @humidity,
@@ -152,14 +154,14 @@ function prepareStatements() {
       updated_at = @updated_at`);
 
   stmts.getHelmetTelemetry = db.prepare(`SELECT id, device_id AS deviceId, ts, lng, lat, speed, heading, altitude, accuracy,
-      heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
+      location_source AS locationSource, heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
       collision_score AS collisionScore, battery, low_power AS lowPower, source, raw_json AS rawJson, created_at AS createdAt
     FROM helmet_telemetry
     WHERE device_id = @device_id AND ts >= @from AND ts <= @to
     ORDER BY ts ASC LIMIT @limit`);
 
   stmts.getHelmetTelemetryCurrent = db.prepare(`SELECT device_id AS deviceId, ts, lng, lat, speed,
-      heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
+      location_source AS locationSource, heart_rate AS heartRate, temperature, humidity, collision, collision_level AS collisionLevel,
       collision_score AS collisionScore, battery, low_power AS lowPower, raw_json AS rawJson, updated_at AS updatedAt
     FROM helmet_telemetry_current WHERE device_id = @device_id`);
 
@@ -269,8 +271,19 @@ export async function initDb(options = {}) {
     console.warn('schema.sql not found at', schemaPath);
   }
 
-  // Migration: ensure device_commands has compatibility/optimization columns and indexes.
+  // Migration: ensure compatibility/optimization columns and indexes.
   try {
+    const ensureColumn = (tableName, columnName, definition) => {
+      const cols = db.prepare(`PRAGMA table_info('${tableName}')`).all();
+      const colNames = (cols || []).map(c => String(c.name));
+      if (!colNames.includes(columnName)) {
+        try { db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`); } catch (e) { console.warn(`Failed to add ${tableName}.${columnName}`, e && e.message ? e.message : e); }
+      }
+    };
+    ensureColumn('gps_points', 'location_source', 'TEXT');
+    ensureColumn('helmet_telemetry', 'location_source', 'TEXT');
+    ensureColumn('helmet_telemetry_current', 'location_source', 'TEXT');
+
     const cols = db.prepare("PRAGMA table_info('device_commands')").all();
     const colNames = (cols || []).map(c => String(c.name));
     if (!colNames.includes('battery')) {
@@ -336,7 +349,17 @@ function nullableBooleanInt(v) {
   return v ? 1 : 0;
 }
 
-function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = null, heading = null, altitude = null, accuracy = null, heartRate = null, temperature = null, humidity = null, collision = null, collisionLevel = null, collisionScore = null, battery = null, lowPower = null, source = 'mqtt', rawJson = null, createdAt = null, updatedAt = null } = {}) {
+function normalizeLocationSource(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'gps') return 'gnss';
+  if (s === 'cell' || s === 'cellular' || s === 'base_station' || s === 'basestation') return 'lbs';
+  if (s === 'gnss' || s === 'lbs') return s;
+  return s;
+}
+
+function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = null, heading = null, altitude = null, accuracy = null, locationSource = null, heartRate = null, temperature = null, humidity = null, collision = null, collisionLevel = null, collisionScore = null, battery = null, lowPower = null, source = 'mqtt', rawJson = null, createdAt = null, updatedAt = null } = {}) {
   return {
     device_id: String(deviceId),
     ts: Number(ts),
@@ -346,6 +369,7 @@ function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = n
     heading: nullableNumber(heading),
     altitude: nullableNumber(altitude),
     accuracy: nullableNumber(accuracy),
+    location_source: normalizeLocationSource(locationSource),
     heart_rate: nullableInteger(heartRate),
     temperature: nullableNumber(temperature),
     humidity: nullableNumber(humidity),
@@ -372,6 +396,7 @@ function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = n
  * @param {number} [param.heading]
  * @param {number} [param.altitude]
  * @param {number} [param.accuracy]
+ * @param {string} [param.locationSource]
  * @param {number} [param.battery]
  * @param {string} [param.status]
  * @param {string} [param.source]
@@ -379,7 +404,7 @@ function normalizeTelemetryRow({ deviceId, ts, lng = null, lat = null, speed = n
  * @param {number} [param.createdAt]
  * @returns {{lastInsertRowid:number,changes:number}} 返回插入信息。发生错误时抛出异常。
  */
-export function insertGpsPoint({ deviceId, ts, lng, lat, speed = null, heading = null, altitude = null, accuracy = null, battery = null, status = 'ok', source = 'raw', rawJson = null, createdAt = null } = {}) {
+export function insertGpsPoint({ deviceId, ts, lng, lat, speed = null, heading = null, altitude = null, accuracy = null, locationSource = null, battery = null, status = 'ok', source = 'raw', rawJson = null, createdAt = null } = {}) {
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   if (!deviceId || ts == null || lng == null || lat == null) {
     throw new Error('Missing required fields: deviceId, ts, lng, lat');
@@ -394,6 +419,7 @@ export function insertGpsPoint({ deviceId, ts, lng, lat, speed = null, heading =
       heading: heading == null ? null : Number(heading),
       altitude: altitude == null ? null : Number(altitude),
       accuracy: accuracy == null ? null : Number(accuracy),
+      location_source: normalizeLocationSource(locationSource),
       battery: battery == null ? null : Number(battery),
       status: status == null ? 'ok' : String(status),
       source: source == null ? 'raw' : String(source),

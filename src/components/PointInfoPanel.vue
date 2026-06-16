@@ -241,13 +241,24 @@ function _isTruthy(raw) {
   return !!v
 }
 
+function _formatLocationSource(raw) {
+  const v = _firstValue(raw)
+  if (v === null) return '未知'
+  const s = String(v).trim().toLowerCase()
+  if (!s) return '未知'
+  if (s === 'gnss' || s === 'gps') return 'GNSS'
+  if (s === 'lbs' || s === 'cell' || s === 'cellular' || s === 'base_station' || s === 'basestation') return 'LBS'
+  return String(v).toUpperCase()
+}
+
 const displayFields = computed(() => {
   const d = options.data
   if (!d) return { latlng: '—', time: '—', speed: '—', heartRate: '—', temperature: '—', humidity: '—', battery: '—', lowPower: '—', collision: '—', collisionAlert: false }
   const ts = _normalizeTs(d.ts)
   const time = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '—'
   const lng = Number(d.lng); const lat = Number(d.lat)
-  const latlng = (Number.isFinite(lng) && Number.isFinite(lat)) ? `${lng.toFixed(6)}, ${lat.toFixed(6)}` : '—'
+  const locationSource = _formatLocationSource(_firstValue(d.locationSource, d.location_source, d.locSource, d.loc_source, d.locType, d.loc_type, d.positioning))
+  const latlng = (Number.isFinite(lng) && Number.isFinite(lat)) ? `${lng.toFixed(6)}, ${lat.toFixed(6)}（${locationSource}）` : '—'
   const speed = _formatNumber(_firstValue(d.speed, d.spd), ' km/h', 1)
   const heartRate = _formatNumber(_firstValue(d.heartRate, d.heart_rate, d.hr, d.bpm), ' bpm', 0)
   const temperature = _formatNumber(_firstValue(d.temperature, d.temp, d.t), ' ℃', 1)

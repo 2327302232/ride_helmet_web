@@ -126,6 +126,7 @@ v1/devices/{deviceId}/cmd
   "heading": 90,
   "altitude": 30,
   "accuracy": 5,
+  "location_source": "gnss",
   "heart_rate": 86,
   "temperature": 28.6,
   "humidity": 61.2,
@@ -137,6 +138,7 @@ v1/devices/{deviceId}/cmd
 **字段说明**:
 - `ts`: **必填**,毫秒时间戳
 - `lng`, `lat`: 经纬度 (有 GPS 时填写)
+- `location_source`: 定位方式,填写 `gnss` 或 `lbs`; 兼容字段名 `locationSource`
 - `speed`: 速度 (km/h 或 m/s,根据实际)
 - `heart_rate`: 心率 (bpm)
 - `temperature`: 温度 (°C)
@@ -162,6 +164,7 @@ v1/devices/{deviceId}/cmd
   "score": 2.3,
   "lng": 116.397428,
   "lat": 39.909230,
+  "location_source": "gnss",
   "speed": 12.5,
   "message": "collision detected"
 }
