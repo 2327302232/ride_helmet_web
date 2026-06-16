@@ -28,7 +28,7 @@
           </div>
           <div class="battery-status">
             <img :src="batteryIcon" alt="battery" class="status-icon" />
-            <span class="battery-text">{{ simStatus === 'offline' ? 'unknown' : (batteryLevel + '%') }}</span>
+            <span class="battery-text">{{ batteryText }}</span>
           </div>
         </div>
         <label class="ps-switch">
@@ -83,6 +83,7 @@ onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
 const router = useRouter()
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
+const AUTO_REFRESH_INTERVAL_MS = 3000
 const deviceId = ref(null)
 const devicesList = ref([])
 const loading = ref(false)
@@ -94,8 +95,9 @@ const powerSave = ref(false)
 const powerSaveLoading = ref(false)
 const showDeviceDropdown = ref(false)
 const deviceSelectRef = ref(null)
-const batteryLevel = ref(78)
+const batteryLevel = ref(null)
 const charging = ref(false)
+let autoRefreshTimer = null
 const sensor = ref({
   ts: null,
   lng: null,
@@ -116,12 +118,20 @@ const powerSaveUnavailable = computed(() => simStatus.value !== 'online')
 const powerSaveDesc = computed(() => {
   return powerSave.value ? '已启用' : '未启用'
 })
+const batteryText = computed(() => {
+  if (simStatus.value !== 'online') return 'unknown'
+  if (batteryLevel.value === undefined || batteryLevel.value === null || batteryLevel.value === '') return 'unknown'
+  const lvl = Number(batteryLevel.value)
+  if (!Number.isFinite(lvl)) return 'unknown'
+  return `${Math.max(0, Math.min(100, Math.round(lvl)))}%`
+})
 const batteryIcon = computed(() => {
   try {
-    // If device is offline, show empty icon
-    if (simStatus.value === 'offline') return batteryEmpty
+    if (simStatus.value !== 'online') return batteryEmpty
+    if (batteryLevel.value === undefined || batteryLevel.value === null || batteryLevel.value === '') return batteryEmpty
     const lvl = Number(batteryLevel.value)
-    const v = Number.isFinite(lvl) ? Math.max(0, Math.min(100, Math.round(lvl))) : 0
+    const v = Number.isFinite(lvl) ? Math.max(0, Math.min(100, Math.round(lvl))) : null
+    if (v == null) return batteryEmpty
     // charging has priority
     if (charging.value) return batteryCharge
     // mapping: 0-10 -> empty, 11-80 -> working, 81-100 -> full
@@ -597,6 +607,19 @@ watch(deviceId, (v) => {
 })
 watch(powerSave, (v) => { try { localStorage.setItem('ride_power_save', JSON.stringify(!!v)) } catch (e) {} })
 
+function startAutoRefresh() {
+  stopAutoRefresh()
+  autoRefreshTimer = setInterval(() => {
+    onRefresh({ showLoading: false }).catch(() => {})
+  }, AUTO_REFRESH_INTERVAL_MS)
+}
+
+function stopAutoRefresh() {
+  if (!autoRefreshTimer) return
+  try { clearInterval(autoRefreshTimer) } catch (e) {}
+  autoRefreshTimer = null
+}
+
 async function loadDevicesList(options = {}) {
   const skipOnlineReload = !!options.skipOnlineReload
   try {
@@ -633,8 +656,10 @@ async function loadDevicesList(options = {}) {
   try { loadTelemetryCurrent(deviceId.value).catch(() => {}) } catch (e) {}
 }
 
-async function onRefresh() {
-  loading.value = true
+async function onRefresh(options = {}) {
+  if (refreshingStatus.value) return
+  const showLoading = options && options.showLoading === false ? false : true
+  if (showLoading) loading.value = true
   refreshingStatus.value = true
   // 用户点击刷新后立即进入“连接中”，直到本次请求收到回复或超时判定离线。
   if (deviceId.value) simStatus.value = 'pending'
@@ -686,7 +711,7 @@ async function onRefresh() {
       try { await loadCommandBasis(deviceId.value, { applyStatus: false }) } catch (e) {}
     } finally {
     refreshingStatus.value = false
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
@@ -695,8 +720,10 @@ onMounted(() => {
   try { powerSave.value = JSON.parse(localStorage.getItem('ride_power_save') || 'false') } catch (e) { powerSave.value = false }
   try { const b = JSON.parse(localStorage.getItem('ride_battery') || 'null'); if (b != null) batteryLevel.value = Number(b) } catch (e) {}
   try { document.addEventListener('click', onDocClick) } catch (e) {}
+  startAutoRefresh()
 })
 onUnmounted(() => {
+  stopAutoRefresh()
   try { if (ws.value) ws.value.close() } catch (e) {}
   try { document.removeEventListener('click', onDocClick) } catch (e) {}
 })
