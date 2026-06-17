@@ -83,7 +83,6 @@ onMounted(() => { document.title = '骑行头盔用户站-Helmet' })
 
 const router = useRouter()
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
-const AUTO_REFRESH_INTERVAL_MS = 3000
 const deviceId = ref(null)
 const devicesList = ref([])
 const loading = ref(false)
@@ -97,7 +96,6 @@ const showDeviceDropdown = ref(false)
 const deviceSelectRef = ref(null)
 const batteryLevel = ref(null)
 const charging = ref(false)
-let autoRefreshTimer = null
 const sensor = ref({
   ts: null,
   lng: null,
@@ -607,19 +605,6 @@ watch(deviceId, (v) => {
 })
 watch(powerSave, (v) => { try { localStorage.setItem('ride_power_save', JSON.stringify(!!v)) } catch (e) {} })
 
-function startAutoRefresh() {
-  stopAutoRefresh()
-  autoRefreshTimer = setInterval(() => {
-    onRefresh({ showLoading: false }).catch(() => {})
-  }, AUTO_REFRESH_INTERVAL_MS)
-}
-
-function stopAutoRefresh() {
-  if (!autoRefreshTimer) return
-  try { clearInterval(autoRefreshTimer) } catch (e) {}
-  autoRefreshTimer = null
-}
-
 async function loadDevicesList(options = {}) {
   const skipOnlineReload = !!options.skipOnlineReload
   try {
@@ -720,10 +705,8 @@ onMounted(() => {
   try { powerSave.value = JSON.parse(localStorage.getItem('ride_power_save') || 'false') } catch (e) { powerSave.value = false }
   try { const b = JSON.parse(localStorage.getItem('ride_battery') || 'null'); if (b != null) batteryLevel.value = Number(b) } catch (e) {}
   try { document.addEventListener('click', onDocClick) } catch (e) {}
-  startAutoRefresh()
 })
 onUnmounted(() => {
-  stopAutoRefresh()
   try { if (ws.value) ws.value.close() } catch (e) {}
   try { document.removeEventListener('click', onDocClick) } catch (e) {}
 })
