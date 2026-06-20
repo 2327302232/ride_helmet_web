@@ -21,6 +21,7 @@ import initTrackService from '../utils/trackService.js'
 import { splitByGap, segmentTrack } from '../utils/segment.js'
 import { useAppStore } from '../stores'
 import { showMessage } from '../composables/useMessage'
+import { showPointPanel, closePointPanel, setPointPanelPlaying } from '../composables/usePointPanel'
 import { useTrackSelection } from '../stores/trackSelection.js'
 // Pinia 轨迹分段选择 store
 const selectionStore = useTrackSelection()
@@ -31,6 +32,7 @@ const LIVE_INITIAL_WINDOW_MS = 30 * 60 * 1000
 const LIVE_FETCH_LIMIT = 5000
 const LIVE_RECONNECT_MS = 1500
 const LIVE_POLL_MS = 3000
+const LIVE_PLAYBACK_SPEED = 5
 const CHINA_TZ_OFFSET_MS = 8 * 60 * 60 * 1000
 
 function firstQueryValue(value) {
@@ -130,6 +132,13 @@ let livePolyline = null
 let liveMarkers = []
 let sosCircle = null
 let sosMarker = null
+let liveSelectedMarker = null
+let liveSelectedIndex = -1
+let livePlayTimer = null
+let liveIsPlaying = false
+let livePlayCurrentIndex = -1
+let liveWaitingForNext = false
+let liveAutoStarted = false
 
 async function getLocationDiagnostics(extra = {}) {
   const info = {
@@ -401,6 +410,212 @@ function makeLiveMarkerHtml(style = {}) {
   return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:${borderWidth}px solid ${border};box-shadow:0 0 4px rgba(0,0,0,0.12)"></div>`
 }
 
+function makeLiveSelectedStyle(style = {}) {
+  return {
+    ...style,
+    border: '#2c9cff',
+    borderWidth: Math.max(2, Number(style.borderWidth) || 2),
+    boxShadow: '0 0 8px rgba(44,156,255,0.7)'
+  }
+}
+
+function clampLiveIndex(index) {
+  if (!Array.isArray(livePoints) || livePoints.length === 0) return -1
+  const n = Number(index)
+  if (!Number.isFinite(n)) return livePoints.length - 1
+  return Math.max(0, Math.min(Math.round(n), livePoints.length - 1))
+}
+
+function centerLivePoint(point) {
+  try {
+    if (!point || !map || typeof map.setCenter !== 'function') return
+    map.setCenter([Number(point.lng), Number(point.lat)])
+  } catch (e) {}
+}
+
+function clearLivePlayTimer() {
+  try { if (livePlayTimer) clearTimeout(livePlayTimer) } catch (e) {}
+  livePlayTimer = null
+}
+
+function applyMarkerStyle(marker, style = {}) {
+  if (!marker) return
+  try {
+    if (typeof marker.setContent === 'function') marker.setContent(makeLiveMarkerHtml(style))
+    if (typeof marker.setOffset === 'function' && typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') {
+      const size = Number(style.size) || 10
+      marker.setOffset(new window.AMap.Pixel(Math.round(-size / 2), Math.round(-size / 2)))
+    }
+    marker.__liveStyle = { ...style }
+  } catch (e) {
+    console.warn('[MapView] apply marker style failed', e)
+  }
+}
+
+function restoreLiveMarkerStyle(marker) {
+  if (!marker) return
+  const base = marker.__liveBaseStyle || liveMarkerStyle(Number(marker.__liveIndex) || 0, Math.max(1, liveMarkers.length || 1))
+  applyMarkerStyle(marker, base)
+}
+
+function clearLiveSelection() {
+  try {
+    if (liveSelectedMarker) restoreLiveMarkerStyle(liveSelectedMarker)
+  } catch (e) {}
+  liveSelectedMarker = null
+  liveSelectedIndex = -1
+}
+
+function selectLiveMarker(marker, index = null) {
+  if (!marker) {
+    clearLiveSelection()
+    return
+  }
+  try {
+    if (liveSelectedMarker && liveSelectedMarker !== marker) restoreLiveMarkerStyle(liveSelectedMarker)
+  } catch (e) {}
+  liveSelectedMarker = marker
+  liveSelectedIndex = Number.isFinite(Number(index)) ? Number(index) : Number(marker.__liveIndex)
+  const base = marker.__liveBaseStyle || liveMarkerStyle(Number(marker.__liveIndex) || 0, Math.max(1, liveMarkers.length || 1))
+  applyMarkerStyle(marker, makeLiveSelectedStyle(base))
+}
+
+function stopLivePlayback({ clearSelection = false } = {}) {
+  clearLivePlayTimer()
+  liveIsPlaying = false
+  livePlayCurrentIndex = -1
+  liveWaitingForNext = false
+  try { setPointPanelPlaying(false) } catch (e) {}
+  if (clearSelection) clearLiveSelection()
+}
+
+function openLivePointPanel(index, { isPlaying = liveIsPlaying, center = true } = {}) {
+  const idx = clampLiveIndex(index)
+  if (idx < 0) return null
+  const point = livePoints[idx]
+  if (!point) return null
+  const marker = Array.isArray(liveMarkers) ? liveMarkers[idx] : null
+  if (marker) selectLiveMarker(marker, idx)
+  else liveSelectedIndex = idx
+  if (center) centerLivePoint(point)
+
+  const onPrev = idx > 0
+    ? () => {
+        stopLivePlayback()
+        openLivePointPanel(idx - 1, { isPlaying: false })
+      }
+    : null
+  const onNext = idx < livePoints.length - 1
+    ? () => {
+        stopLivePlayback()
+        openLivePointPanel(idx + 1, { isPlaying: false })
+      }
+    : null
+
+  return showPointPanel({
+    title: '轨迹点信息',
+    data: point,
+    isPlaying: !!isPlaying,
+    onPrev,
+    onNext,
+    onTogglePlay: (playing) => {
+      if (playing) startLivePlaybackFrom(idx)
+      else stopLivePlayback()
+    },
+    canPlay: livePoints.length > 0
+  })
+}
+
+function advanceLivePlaybackToIndex(index) {
+  if (!liveIsPlaying) return
+  const idx = clampLiveIndex(index)
+  if (idx < 0) {
+    livePlayCurrentIndex = -1
+    liveWaitingForNext = true
+    try { setPointPanelPlaying(true) } catch (e) {}
+    return
+  }
+  livePlayCurrentIndex = idx
+  liveWaitingForNext = false
+  openLivePointPanel(idx, { isPlaying: true, center: true })
+  scheduleLivePlaybackNext()
+}
+
+function scheduleLivePlaybackNext() {
+  clearLivePlayTimer()
+  if (!liveIsPlaying) return
+  if (livePlayCurrentIndex < 0) {
+    if (livePoints.length > 0) {
+      advanceLivePlaybackToIndex(livePoints.length - 1)
+      return
+    }
+    liveWaitingForNext = true
+    try { setPointPanelPlaying(true) } catch (e) {}
+    return
+  }
+  if (livePlayCurrentIndex >= livePoints.length - 1) {
+    liveWaitingForNext = true
+    try { setPointPanelPlaying(true) } catch (e) {}
+    return
+  }
+
+  const cur = livePoints[livePlayCurrentIndex]
+  const next = livePoints[livePlayCurrentIndex + 1]
+  if (!cur || !next) {
+    liveWaitingForNext = true
+    try { setPointPanelPlaying(true) } catch (e) {}
+    return
+  }
+
+  liveWaitingForNext = false
+  const delta = Math.max(1, Number(next.ts) - Number(cur.ts))
+  const delay = Math.max(0, Math.round(delta / LIVE_PLAYBACK_SPEED))
+  livePlayTimer = setTimeout(() => {
+    livePlayTimer = null
+    if (!liveIsPlaying) return
+    advanceLivePlaybackToIndex(livePlayCurrentIndex + 1)
+  }, delay)
+}
+
+function startLivePlaybackFrom(index) {
+  liveAutoStarted = true
+  clearLivePlayTimer()
+  liveIsPlaying = true
+  liveWaitingForNext = false
+  const idx = clampLiveIndex(index)
+  if (idx < 0) {
+    livePlayCurrentIndex = -1
+    try { setPointPanelPlaying(true) } catch (e) {}
+    return
+  }
+  livePlayCurrentIndex = idx
+  openLivePointPanel(idx, { isPlaying: true, center: true })
+  scheduleLivePlaybackNext()
+}
+
+function continueLivePlaybackAfterAppend() {
+  if (!liveIsPlaying) return
+  if (livePlayCurrentIndex < 0) {
+    if (livePoints.length > 0) advanceLivePlaybackToIndex(livePoints.length - 1)
+    return
+  }
+  if (liveWaitingForNext && livePlayCurrentIndex < livePoints.length - 1) {
+    advanceLivePlaybackToIndex(livePlayCurrentIndex + 1)
+  }
+}
+
+function maybeAutoStartLivePlayback() {
+  if (liveAutoStarted) return
+  if (!isLiveMode.value) return
+  if (!Array.isArray(livePoints) || livePoints.length === 0) return
+  startLivePlaybackFrom(livePoints.length - 1)
+}
+
+function handleLivePointPanelClose() {
+  if (!isLiveMode.value && !liveIsPlaying && !liveSelectedMarker) return
+  stopLivePlayback({ clearSelection: true })
+}
+
 function makeSosMarkerHtml() {
   return '<div style="display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#d50000;color:#fff;border:3px solid #fff;box-shadow:0 0 0 8px rgba(213,0,0,0.18),0 5px 16px rgba(0,0,0,0.32);font-size:11px;font-weight:900;line-height:1">SOS</div>'
 }
@@ -476,13 +691,25 @@ function applyLiveMarkerStyle(marker, index, total) {
   if (!marker) return
   const style = liveMarkerStyle(index, total)
   try {
-    if (typeof marker.setContent === 'function') marker.setContent(makeLiveMarkerHtml(style))
-    if (typeof marker.setOffset === 'function' && typeof window !== 'undefined' && window.AMap && typeof window.AMap.Pixel === 'function') {
-      const size = Number(style.size) || 10
-      marker.setOffset(new window.AMap.Pixel(Math.round(-size / 2), Math.round(-size / 2)))
-    }
+    marker.__liveIndex = index
+    marker.__liveBaseStyle = { ...style }
+    applyMarkerStyle(marker, liveSelectedMarker === marker ? makeLiveSelectedStyle(style) : style)
   } catch (e) {
     console.warn('[MapView] live marker style failed', e)
+  }
+}
+
+function attachLiveMarkerClick(marker, index) {
+  if (!marker) return
+  const handler = () => {
+    stopLivePlayback()
+    openLivePointPanel(index, { isPlaying: false, center: true })
+  }
+  try {
+    if (typeof marker.on === 'function') marker.on('click', handler)
+    else if (typeof marker.addEventListener === 'function') marker.addEventListener('click', handler)
+  } catch (e) {
+    console.warn('[MapView] attach live marker click failed', e)
   }
 }
 
@@ -494,7 +721,14 @@ function createLiveMarker(point, index, total) {
       const size = Number(style.size) || 10
       opts.offset = new window.AMap.Pixel(Math.round(-size / 2), Math.round(-size / 2))
     }
-    return createMarker(map, [point.lng, point.lat], opts)
+    const marker = createMarker(map, [point.lng, point.lat], opts)
+    try {
+      marker.__liveIndex = index
+      marker.__liveBaseStyle = { ...style }
+      marker.__livePointKey = makeLivePointKey(point)
+    } catch (e) {}
+    attachLiveMarkerClick(marker, index)
+    return marker
   } catch (e) {
     console.warn('[MapView] create live marker failed', e)
     return null
@@ -502,6 +736,7 @@ function createLiveMarker(point, index, total) {
 }
 
 function clearLiveLayers() {
+  clearLiveSelection()
   try {
     if (livePolyline && typeof livePolyline.setMap === 'function') livePolyline.setMap(null)
     for (const marker of liveMarkers) {
@@ -609,6 +844,8 @@ async function renderInitialLiveTrack(sessionId) {
   if (!trackService || liveStopped || sessionId !== liveSessionId) return
   liveStatus.value = 'connecting'
   resetLivePointState()
+  stopLivePlayback({ clearSelection: true })
+  liveAutoStarted = false
   try {
     const rawPoints = await fetchTrackPoints({
       deviceId: liveDeviceId.value,
@@ -633,6 +870,7 @@ async function renderInitialLiveTrack(sessionId) {
     livePointCount.value = points.length
     renderLiveTrack(points, { fit: true })
     renderSosOverlay({ fit: true })
+    maybeAutoStartLivePlayback()
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'live'
   } catch (e) {
     console.warn('[MapView] initial live track failed', e)
@@ -640,6 +878,7 @@ async function renderInitialLiveTrack(sessionId) {
     try { if (trackService) trackService.clearTrack() } catch (err) {}
     resetLivePointState()
     renderSosOverlay({ fit: true })
+    stopLivePlayback({ clearSelection: true })
     if (!liveStopped && sessionId === liveSessionId) liveStatus.value = 'waiting'
   }
 }
@@ -655,6 +894,11 @@ async function appendLivePoint(point, sessionId) {
     clearLiveLayers()
     try { trackService.clearTrack() } catch (e) {}
     resetLivePointState()
+    if (liveIsPlaying) {
+      clearLivePlayTimer()
+      livePlayCurrentIndex = -1
+      liveWaitingForNext = true
+    }
   }
 
   liveSeen.add(key)
@@ -662,6 +906,8 @@ async function appendLivePoint(point, sessionId) {
   liveLastTsRef.value = point.ts
   try {
     appendLiveLayerPoint(point)
+    continueLivePlaybackAfterAppend()
+    maybeAutoStartLivePlayback()
     liveStatus.value = 'live'
     return true
   } catch (e) {
@@ -774,6 +1020,8 @@ function connectLiveWs(sessionId, reconnecting = false) {
 function stopLiveMode({ clearMap = true } = {}) {
   liveStopped = true
   liveSessionId += 1
+  stopLivePlayback({ clearSelection: true })
+  liveAutoStarted = false
   try { if (liveReconnectTimer) clearTimeout(liveReconnectTimer) } catch (e) {}
   try { if (livePollTimer) clearTimeout(livePollTimer) } catch (e) {}
   liveReconnectTimer = null
@@ -790,6 +1038,7 @@ function stopLiveMode({ clearMap = true } = {}) {
   liveWs = null
   liveStatus.value = 'disconnected'
   resetLivePointState()
+  try { closePointPanel() } catch (e) {}
   if (clearMap && trackService) {
     clearLiveLayers()
     try { trackService.clearTrack() } catch (e) {}
@@ -1109,6 +1358,11 @@ async function locate() {
 
 onMounted(async () => {
   try {
+    try {
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('pointPanel:close', handleLivePointPanelClose)
+      }
+    } catch (e) {}
     status.value = '加载高德 SDK…'
     await loadAmapSdk()
 
@@ -1146,6 +1400,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  try {
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('pointPanel:close', handleLivePointPanelClose)
+    }
+  } catch (e) {}
   try { if (stopModeWatch) stopModeWatch() } catch (e) {}
   stopModeWatch = null
   try { if (stopSelectionWatch) stopSelectionWatch() } catch (e) {}
