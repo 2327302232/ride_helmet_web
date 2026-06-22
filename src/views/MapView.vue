@@ -33,7 +33,6 @@ const LIVE_FETCH_LIMIT = 5000
 const LIVE_RECONNECT_MS = 1500
 const LIVE_POLL_MS = 3000
 const LIVE_PLAYBACK_SPEED = 5
-const CHINA_TZ_OFFSET_MS = 8 * 60 * 60 * 1000
 
 function firstQueryValue(value) {
   return Array.isArray(value) ? value[0] : value
@@ -335,33 +334,9 @@ function normalizeLiveTs(raw) {
   return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
 }
 
-function getDisplayLiveTs(ts) {
-  const n = Number(ts)
-  if (!Number.isFinite(n)) return NaN
-  const diff = n - Date.now()
-  if (diff > 3 * 60 * 60 * 1000 && diff < 12 * 60 * 60 * 1000) {
-    return n - CHINA_TZ_OFFSET_MS
-  }
-  return n
-}
-
 function formatLiveTime(ts) {
-  const displayTs = getDisplayLiveTs(ts)
-  if (!Number.isFinite(displayTs)) return '暂无'
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }).format(new Date(displayTs))
-  } catch (e) {
-    return new Date(displayTs).toLocaleString()
-  }
+  if (!Number.isFinite(Number(ts))) return '暂无'
+  return new Date(Number(ts)).toLocaleString()
 }
 
 function normalizeLivePoint(payload) {

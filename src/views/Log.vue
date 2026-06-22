@@ -408,16 +408,14 @@ function formatDate(ts) {
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  const d = new Date(ms)
-  return d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日'
+  return new Date(ms).toLocaleString()
 }
 function formatTime(ts) {
   if (!ts) return '—'
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  const d = new Date(ms)
-  return d.toTimeString().slice(0, 8)
+  return new Date(ms).toLocaleString()
 }
 function formatLatLng(p) {
   if (!p) return '—'
