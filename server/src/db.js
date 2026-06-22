@@ -478,6 +478,30 @@ export function upsertHelmetTelemetryCurrent(payload = {}) {
   return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
 }
 
+/**
+ * Update specific fields on helmet_telemetry_current for a device.
+ * Used to sync low_power/battery from command acks without waiting for the next telemetry packet.
+ */
+export function updateHelmetTelemetryCurrentFields(deviceId, { lowPower, battery } = {}) {
+  if (!db) throw new Error('Database not initialized. Call initDb() first.');
+  if (!deviceId) throw new Error('deviceId is required.');
+  const sets = [];
+  const params = { device_id: String(deviceId), updated_at: Date.now() };
+  if (lowPower !== undefined && lowPower !== null) {
+    sets.push('low_power = @low_power');
+    params.low_power = lowPower ? 1 : 0;
+  }
+  if (battery !== undefined && battery !== null) {
+    sets.push('battery = @battery');
+    params.battery = Math.round(Number(battery));
+  }
+  if (sets.length === 0) return { changes: 0 };
+  sets.push('updated_at = @updated_at');
+  const sql = `UPDATE helmet_telemetry_current SET ${sets.join(', ')} WHERE device_id = @device_id`;
+  const info = db.prepare(sql).run(params);
+  return { changes: info.changes };
+}
+
 export function getHelmetTelemetry({ deviceId, from = 0, to = Number.MAX_SAFE_INTEGER, limit = 1000 } = {}) {
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   if (!deviceId) throw new Error('deviceId is required.');

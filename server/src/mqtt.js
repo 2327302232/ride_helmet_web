@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 import mqtt from 'mqtt';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd, insertHelmetTelemetry, upsertHelmetTelemetryCurrent, insertCollisionEvent } from './db.js';
+import { insertStatus, addDeviceCommand, updateCommandStatus, getPendingCommands, setDeviceOnline, getPendingRequestByCmd, getPendingRequestByDevice, deletePendingRequestByCmd, insertHelmetTelemetry, upsertHelmetTelemetryCurrent, insertCollisionEvent, updateHelmetTelemetryCurrentFields } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -237,6 +237,18 @@ function markCommandReplied({ deviceId, cmdId, ok = true, ts = null, payloadObj 
     });
   } catch (err) {
     emitter.emit('error', { error: err, context: { where: 'markCommandReplied', cmdId, deviceId, source } });
+  }
+
+  // 同步 low_power/battery 到 helmet_telemetry_current，避免前端读到旧遥测数据
+  try {
+    if (deviceId && (lowPowerVal != null || batteryVal != null)) {
+      updateHelmetTelemetryCurrentFields(deviceId, {
+        lowPower: lowPowerVal == null ? undefined : lowPowerVal,
+        battery: batteryVal == null ? undefined : batteryVal
+      });
+    }
+  } catch (err) {
+    emitter.emit('error', { error: err, context: { where: 'syncTelemetryCurrent', cmdId, deviceId, source } });
   }
 }
 
