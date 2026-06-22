@@ -282,7 +282,7 @@ function formatTs(ts) {
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  return new Date(ms).toISOString()
+  return new Date(ms).toLocaleString('zh-CN', { timeZone: 'UTC' })
 }
 
 function formatValue(v, unit = '') {

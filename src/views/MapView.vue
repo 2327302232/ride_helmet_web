@@ -336,7 +336,7 @@ function normalizeLiveTs(raw) {
 
 function formatLiveTime(ts) {
   if (!Number.isFinite(Number(ts))) return '暂无'
-  return new Date(Number(ts)).toISOString()
+  return new Date(Number(ts)).toLocaleString('zh-CN', { timeZone: 'UTC' })
 }
 
 function normalizeLivePoint(payload) {
