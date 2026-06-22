@@ -125,7 +125,7 @@ function hasLocation(payload) {
 function formatTs(ts) {
   const n = Number(ts)
   if (!Number.isFinite(n)) return '时间未知'
-  return new Date(n).toLocaleString()
+  return new Date(n).toISOString()
 }
 
 function formatSpeed(speed) {

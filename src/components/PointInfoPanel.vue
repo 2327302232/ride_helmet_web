@@ -255,7 +255,7 @@ const displayFields = computed(() => {
   const d = options.data
   if (!d) return { latlng: '—', time: '—', speed: '—', heartRate: '—', temperature: '—', humidity: '—', battery: '—', lowPower: '—', collision: '—', collisionAlert: false }
   const ts = _normalizeTs(d.ts)
-  const time = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '—'
+  const time = Number.isFinite(ts) ? new Date(ts).toISOString() : '—'
   const lng = Number(d.lng); const lat = Number(d.lat)
   const locationSource = _formatLocationSource(_firstValue(d.locationSource, d.location_source, d.locSource, d.loc_source, d.locType, d.loc_type, d.positioning))
   const latlng = (Number.isFinite(lng) && Number.isFinite(lat)) ? `${lng.toFixed(6)}, ${lat.toFixed(6)}（${locationSource}）` : '—'

@@ -401,21 +401,21 @@ function formatTs(ts) {
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  return new Date(ms).toLocaleString()
+  return new Date(ms).toISOString()
 }
 function formatDate(ts) {
   if (!ts) return '—'
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  return new Date(ms).toLocaleString()
+  return new Date(ms).toISOString()
 }
 function formatTime(ts) {
   if (!ts) return '—'
   const n = Number(ts)
   if (!Number.isFinite(n)) return String(ts)
   const ms = n < 1e12 ? Math.round(n * 1000) : Math.round(n)
-  return new Date(ms).toLocaleString()
+  return new Date(ms).toISOString()
 }
 function formatLatLng(p) {
   if (!p) return '—'
