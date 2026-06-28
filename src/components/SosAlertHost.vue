@@ -252,7 +252,9 @@ async function loadAndSubscribeDevices() {
 function handleWsMessage(msg) {
   if (!msg || !msg.type) return
   if (msg.type === 'sos') {
-    showSos(msg.payload, { showMeta: false }).catch(() => {})
+    const eventType = String(((msg.payload || {}).eventType) || ((msg.payload || {}).event) || '').toLowerCase()
+    const showMeta = eventType !== 'sos' // collision 事件/telemetry 保留详情，sos 仅提示
+    showSos(msg.payload, { showMeta }).catch(() => {})
     return
   }
   if (msg.type === 'telemetry') {

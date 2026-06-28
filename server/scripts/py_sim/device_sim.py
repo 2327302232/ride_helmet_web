@@ -46,8 +46,8 @@ def to_bool(value: Any) -> bool:
 @dataclass
 class SimState:
     device_id: str
-    lng: float = 113.405403
-    lat: float = 23.041300
+    lng: float = 113.398744
+    lat: float = 23.034911
     speed: float = 0.0
     heading: float = 90.0
     altitude: float = 30.0
@@ -388,23 +388,26 @@ class PythonHelmetSimulator:
         self._publish(topic, body)
 
     def _send_event(self, event: str, score: Optional[float] = None, level: Optional[str] = None, in_payload: bool = False) -> None:
+        event_name = str(event).lower()
+        include_collision_fields = event_name != "sos"
         with self.state.lock:
             payload = {
                 "deviceId": self.state.device_id,
                 "ts": now_ms(),
-                "lvl": self.state.collision_level if level is None else level,
-                "level": self.state.collision_level if level is None else level,
-                "score": self.state.collision_score if score is None else score,
                 "lng": self.state.lng,
                 "lat": self.state.lat,
-                "speed": self.state.speed,
                 "location_source": self.state.location_source,
                 "message": f"{event} detected",
             }
+            if include_collision_fields:
+                payload["lvl"] = self.state.collision_level if level is None else level
+                payload["level"] = self.state.collision_level if level is None else level
+                payload["score"] = self.state.collision_score if score is None else score
+                payload["speed"] = self.state.speed
         topic = f"{self._topic_events}/{event}"
         self._publish(topic, payload)
         if in_payload:
-            self._send_telemetry(collision=True, event=event)
+            self._send_telemetry(collision=(event_name != "sos"), event=event)
 
     def _auto_send_telemetry_loop(self) -> None:
         while not self._stop.is_set():
@@ -535,7 +538,7 @@ class PythonHelmetSimulator:
                     score = float(args[0])
                     if len(args) >= 2:
                         level = args[1]
-                self._send_event("sos", score=score, level=level, in_payload=True)
+                self._send_event("sos", score=score, level=level, in_payload=False)
                 print(f"已发送 SOS 事件: score={score}, level={level}")
             elif cmd == "status":
                 online = True

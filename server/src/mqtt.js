@@ -191,7 +191,7 @@ function normalizeTelemetryPayload(deviceId, payloadObj, source = 'mqtt', topic 
 function makeSosPayloadFromTelemetry(telemetry = {}, payloadObj = {}, eventType = 'collision') {
   return {
     deviceId: telemetry.deviceId,
-    eventType: eventType || 'collision',
+    eventType: String((payloadObj && payloadObj.event) || eventType || 'collision'),
     ts: telemetry.ts,
     lng: telemetry.lng,
     lat: telemetry.lat,
