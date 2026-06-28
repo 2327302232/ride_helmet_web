@@ -174,3 +174,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\device-sim-mosquitto.ps1 `
 
 你也可以用 `-Protocol mqtt -BrokerPort 1883` 与本地 broker 联调。  
 默认的命令回复是回 `status`（`request/status`）和 `ack`（`power/set`），可在菜单中随时发送带 `cmdId` 的模拟 status/ack。
+
+## Python 开发板模拟器（纯 Python）
+
+项目新增 `server/scripts/py_sim/device_sim.py`，可在 Windows 下直接运行，无需 Mosquitto CLI：
+
+```powershell
+cd web/ride_helmet_web/server/scripts/py_sim
+pip install -r requirements.txt
+python device_sim.py --device-id dev-001 --protocol mqtts --reply-mode status
+```
+
+内置命令：
+
+- 刷新流程联调：监听 `v1/devices/{deviceId}/cmd`，收到 `request/status` 后回复 `status/ack`
+- 省电流程联调：收到 `power/set` 后回 `ack`（默认），并回写 `low_power`
+- 手动发送 SOS/碰撞（含可选 score）
+- 命令行 `set` 可修改 `lng/lat/battery/heart_rate/temperature/humidity/speed/heading/altitude/accuracy/low_power/location_source/collision_score/collision_level`
+- 自动/手动发送 telemetry
+
+更多用法见同目录下 `README.md`（含参数说明与交互命令清单）。

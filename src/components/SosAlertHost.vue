@@ -20,7 +20,7 @@
 
         <div v-else class="sos-no-location">本次碰撞暂未携带有效定位。</div>
 
-        <div class="sos-meta">
+        <div v-if="showSosMeta" class="sos-meta">
           <div>
             <span>等级</span>
             <strong>{{ activeSos.level || '未知' }}</strong>
@@ -49,6 +49,7 @@ const router = useRouter()
 const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
 const modalRef = ref(null)
 const activeSos = ref(null)
+const showSosMeta = ref(true)
 
 let ws = null
 let reconnectTimer = null
@@ -184,13 +185,14 @@ function openMapForSos(payload) {
   router.push({ name: 'map', query })
 }
 
-async function showSos(payload) {
+async function showSos(payload, options = {}) {
   const sos = normalizeSos(payload)
   if (!sos || !sos.deviceId) return
   if (isRecentDuplicate(sos)) return
   const seq = modalSeq + 1
   modalSeq = seq
   activeSos.value = sos
+  showSosMeta.value = options.showMeta !== false
   vibrateSos()
   await nextTick()
 
@@ -250,13 +252,13 @@ async function loadAndSubscribeDevices() {
 function handleWsMessage(msg) {
   if (!msg || !msg.type) return
   if (msg.type === 'sos') {
-    showSos(msg.payload).catch(() => {})
+    showSos(msg.payload, { showMeta: false }).catch(() => {})
     return
   }
   if (msg.type === 'telemetry') {
     const payload = msg.payload || {}
     if (payload.collision === true || payload.collision === 1 || payload.collision === '1' || payload.collision === 'true') {
-      showSos(payload).catch(() => {})
+      showSos(payload, { showMeta: true }).catch(() => {})
     }
   }
 }

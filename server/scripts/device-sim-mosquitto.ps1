@@ -31,8 +31,13 @@ function New-CommandArgs {
     )
     if ($Protocol -eq 'mqtts') {
       if ($CaFile) {
-        $args += '--cafile'
-        $args += $CaFile
+        if (Test-Path -Path $CaFile -PathType Leaf) {
+          $args += '--cafile'
+          $args += $CaFile
+        } else {
+          Write-Warning "未找到 CA 文件 $CaFile，自动切换为 --insecure（可按需改 CA 文件或使用 -Insecure）。"
+          $args += '--insecure'
+        }
       } elseif ($Insecure) {
         $args += '--insecure'
       } else {
@@ -112,7 +117,66 @@ function Send-StatusOrAck {
       }
       Publish-Mqtt -Suffix 'ack' -Payload $payload -MqttQos 0
     }
-    Write-Host "已回包 -> $Action (cmdId=$CmdId, ok=$Ok)"
+  Write-Host "已回包 -> $Action (cmdId=$CmdId, ok=$Ok)"
+}
+
+function Process-IncomingCommands {
+  $incoming = Receive-Job -Job $listener -Keep -ErrorAction SilentlyContinue
+  if (-not $incoming) { return $false }
+  foreach ($line in $incoming) {
+    $raw = [string]$line
+    $idx = $raw.IndexOf(' ')
+    if ($idx -lt 1) { continue }
+    $topic = $raw.Substring(0, $idx)
+    $payloadText = $raw.Substring($idx + 1)
+    try {
+      $payload = $payloadText | ConvertFrom-Json -ErrorAction Stop
+      Handle-Command -Topic $topic -Payload $payload
+    } catch {
+      Write-Warning "无法解析命令 JSON: $payloadText"
+    }
+  }
+  return $true
+}
+
+function Read-CharChoice {
+  param([int]$TimeoutMs = 200)
+  $endTime = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  while ([DateTime]::UtcNow -lt $endTime) {
+    if ([Console]::KeyAvailable) {
+      $key = [Console]::ReadKey($true)
+      if ($null -eq $key) { return $null }
+      $ch = $key.KeyChar
+      if ([string]::IsNullOrWhiteSpace($ch)) { return $null }
+      Write-Host "选择: $ch"
+      return $ch
+    }
+    Start-Sleep -Milliseconds 20
+    Process-IncomingCommands | Out-Null
+  }
+  return $null
+}
+
+function Show-Menu {
+  Write-Host '1) 发送 telemetry'
+  Write-Host '2) 发送 telemetry(含碰撞字段)'
+  Write-Host '3) 手动发送 events/collision'
+  Write-Host '4) 手动发送 events/sos'
+  Write-Host '5) 更新经纬度'
+  Write-Host '6) 更新电量'
+  Write-Host '7) 更新传感器(心率/温度/湿度/速度/方向)'
+  Write-Host '8) 切换 low_power'
+  Write-Host '9) 发送设备主动 status（无需 cmdId）'
+  Write-Host 'q) 退出'
+}
+
+function Supports-KeyPolling {
+  try {
+    $null = [Console]::KeyAvailable
+    return $true
+  } catch {
+    return $false
+  }
 }
 
 function Get-Bool {
@@ -165,7 +229,19 @@ function Handle-Command {
 
   switch ("$type/$action") {
     'request/status' {
-      Send-StatusOrAck -CmdId $cmdId -Action 'status' -Ok $true -Message 'status ok'
+      Send-StatusOrAck -CmdId $cmdId -Action 'ack' -Ok $true -Message 'request/status received'
+      Start-Sleep -Milliseconds 200
+      Publish-Mqtt -Suffix 'status' -Payload @{
+        deviceId = $DeviceId
+        cmdId = $cmdId
+        online = $true
+        status = 'ok'
+        message = 'status ok'
+        battery = $script:state.battery
+        low_power = $script:state.low_power
+        ts = Get-NowMs
+      } -MqttQos 0
+      Write-Host "已回包 -> status (cmdId=$cmdId, online=$true)"
     }
     'power/set' {
       $target = Resolve-LowPowerValue $Payload.value
@@ -270,35 +346,40 @@ $listener = Start-Job -Name 'helmet-device-cmd-listener' -ArgumentList @($mosqui
 }
 
 try {
+  $supportsKeyPoll = Supports-KeyPolling
+  if (-not $supportsKeyPoll) {
+    Write-Host '当前终端不支持按键监听，将使用 Enter 输入模式（需手动回车选择）。'
+  } else {
+    Write-Host '按 1-9 或 q 任意时刻快速响应命令（无需回车）。按回车模式下可直接无感知处理刷新命令。'
+    Show-Menu
+  }
+
   while ($true) {
-    $incoming = Receive-Job -Job $listener -Keep -ErrorAction SilentlyContinue
-    foreach ($line in $incoming) {
-      $raw = [string]$line
-      $idx = $raw.IndexOf(' ')
-      if ($idx -lt 1) { continue }
-      $topic = $raw.Substring(0, $idx)
-      $payloadText = $raw.Substring($idx + 1)
-      try {
-        $payload = $payloadText | ConvertFrom-Json -ErrorAction Stop
-        Handle-Command -Topic $topic -Payload $payload
-      } catch {
-        Write-Warning "无法解析命令 JSON: $payloadText"
-      }
+    if (-not (Process-IncomingCommands)) {
+      # no command to process in this tick
     }
 
     Write-Host ''
     Write-Host "当前状态 => lng=$($script:state.lng), lat=$($script:state.lat), battery=$($script:state.battery), low_power=$($script:state.low_power), heart=$($script:state.heart_rate), temp=$($script:state.temperature), hum=$($script:state.humidity)"
-    Write-Host '1) 发送 telemetry'
-    Write-Host '2) 发送 telemetry(含碰撞字段)'
-    Write-Host '3) 手动发送 events/collision'
-    Write-Host '4) 手动发送 events/sos'
-    Write-Host '5) 更新经纬度'
-    Write-Host '6) 更新电量'
-    Write-Host '7) 更新传感器(心率/温度/湿度/速度/方向)'
-    Write-Host '8) 切换 low_power'
-    Write-Host '9) 发送设备主动 status（无需 cmdId）'
-    Write-Host 'q) 退出'
-    $choice = Read-Host '选择'
+    if ($supportsKeyPoll) {
+      $choice = Read-CharChoice -TimeoutMs 250
+      if (-not $choice) {
+        continue
+      }
+      Show-Menu
+    } else {
+      Write-Host '1) 发送 telemetry'
+      Write-Host '2) 发送 telemetry(含碰撞字段)'
+      Write-Host '3) 手动发送 events/collision'
+      Write-Host '4) 手动发送 events/sos'
+      Write-Host '5) 更新经纬度'
+      Write-Host '6) 更新电量'
+      Write-Host '7) 更新传感器(心率/温度/湿度/速度/方向)'
+      Write-Host '8) 切换 low_power'
+      Write-Host '9) 发送设备主动 status（无需 cmdId）'
+      Write-Host 'q) 退出'
+      $choice = Read-Host '选择'
+    }
 
     switch ($choice) {
       '1' {
