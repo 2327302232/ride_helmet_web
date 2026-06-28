@@ -5,7 +5,7 @@
         <div class="sos-status">
           <span class="sos-pulse"></span>
           <div>
-            <div class="sos-title">检测到头盔碰撞</div>
+            <div class="sos-title">{{ activeSosTitle }}</div>
             <div class="sos-subtitle">{{ activeSos.deviceId || '未知设备' }} · {{ formatTs(activeSos.ts) }}</div>
           </div>
         </div>
@@ -50,6 +50,7 @@ const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8888'
 const modalRef = ref(null)
 const activeSos = ref(null)
 const showSosMeta = ref(true)
+const activeSosTitle = ref('检测到头盔碰撞')
 
 let ws = null
 let reconnectTimer = null
@@ -193,6 +194,8 @@ async function showSos(payload, options = {}) {
   modalSeq = seq
   activeSos.value = sos
   showSosMeta.value = options.showMeta !== false
+  const eventType = String(firstDefined(options.eventType, payload.eventType, payload.event, 'collision')).toLowerCase()
+  activeSosTitle.value = eventType === 'sos' ? 'SOS 报警' : '检测到头盔碰撞'
   vibrateSos()
   await nextTick()
 
@@ -260,7 +263,7 @@ function handleWsMessage(msg) {
   if (msg.type === 'telemetry') {
     const payload = msg.payload || {}
     if (payload.collision === true || payload.collision === 1 || payload.collision === '1' || payload.collision === 'true') {
-      showSos(payload, { showMeta: true }).catch(() => {})
+      showSos(payload, { showMeta: true, eventType: 'collision' }).catch(() => {})
     }
   }
 }
