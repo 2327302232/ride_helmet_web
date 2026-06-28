@@ -25,7 +25,7 @@
           <div class="pip-row"><strong>温度：</strong><span>{{ displayFields.temperature }}</span></div>
           <div class="pip-row"><strong>湿度：</strong><span>{{ displayFields.humidity }}</span></div>
           <div class="pip-row"><strong>电量：</strong><span>{{ displayFields.battery }}</span></div>
-          <div class="pip-row"><strong>省电模式：</strong><span>{{ displayFields.lowPower }}</span></div>
+          <div class="pip-row"><strong>低功耗模式：</strong><span>{{ displayFields.lowPower }}</span></div>
           <div class="pip-row" :class="{ 'pip-alert': displayFields.collisionAlert }"><strong>碰撞检测：</strong><span>{{ displayFields.collision }}</span></div>
         </div>
         <div v-else class="pip-placeholder">点信息将在此显示。</div>

@@ -145,3 +145,32 @@ sqlite3 server/data/tracks.sqlite "SELECT * FROM device_commands ORDER BY ts DES
 - 回复命令时必须包含 **cmdId**
 - `low_power` 必须是**布尔值**而非字符串
 - 在主循环中 publish，不要在 MQTT 回调中直接发送
+
+## Windows Mosquitto 设备模拟器（替代开发板）
+
+项目新增 `server/scripts/device-sim-mosquitto.ps1`，可在 Windows 上完整模拟开发板 MQTT 行为（基于 Mosquitto CLI）：
+
+- 监听 `v1/devices/{deviceId}/cmd`
+- 自动处理 `request/status` 与 `power/set` 并回 `status/ack`
+- 支持手动发送 telemetry（普通 / 带碰撞）
+- 支持手动发送事件 `events/collision` / `events/sos`，可输入可选 `score/level`
+- 可随时调整经纬度、电量、心率、温度、湿度、速度、方向、low_power
+
+示例运行：
+
+```powershell
+cd D:\PERSONAL\Project\26_4\web\ride_helmet_web\server
+powershell -ExecutionPolicy Bypass -File .\scripts\device-sim-mosquitto.ps1 `
+  -DeviceId dev-001 `
+  -BrokerHost e3133611.ala.cn-hangzhou.emqxsl.cn `
+  -BrokerPort 8883 `
+  -Protocol mqtts `
+  -Username Device `
+  -Password mqtt `
+  -TopicPrefix v1/devices
+```
+
+若在同机上有 `server/emqxsl-ca.crt`，脚本会优先使用该证书；如需临时跳过校验，可加 `-Insecure`。
+
+你也可以用 `-Protocol mqtt -BrokerPort 1883` 与本地 broker 联调。  
+默认的命令回复是回 `status`（`request/status`）和 `ack`（`power/set`），可在菜单中随时发送带 `cmdId` 的模拟 status/ack。

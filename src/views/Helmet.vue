@@ -23,7 +23,7 @@
       <div class="power-save-panel" :class="{disabled: powerSaveUnavailable}">
         <div class="ps-main">
           <div class="ps-left">
-            <span class="ps-label">省电模式</span>
+            <span class="ps-label">低功耗模式</span>
             <span class="ps-desc">{{ powerSaveDesc }}</span>
           </div>
           <div class="battery-status">
@@ -250,6 +250,7 @@ function handleWsMessage(msg) {
   if (!msg || !msg.type) return
   if (msg.type === 'cmd_ack') {
     const p = msg.payload
+    syncPowerSaveFromPayload(p)
     if (p && p.cmdId && pendingResolvers.has(p.cmdId)) {
       const fn = pendingResolvers.get(p.cmdId)
       pendingResolvers.delete(p.cmdId)
@@ -257,6 +258,7 @@ function handleWsMessage(msg) {
     }
   } else if (msg.type === 'status') {
     const p = msg.payload
+    syncPowerSaveFromPayload(p)
     // status payload may include raw object with cmdId
     let cmdId = null
     try {
@@ -334,6 +336,17 @@ function readLowPower(payload) {
     if (v !== undefined && v !== null) return normalizeBool(v)
   }
   return undefined
+}
+
+function syncPowerSaveFromPayload(payload) {
+  const lp = readLowPower(payload)
+  if (lp === undefined || lp === null) return false
+  const normalized = normalizeBool(lp)
+  if (powerSave.value !== normalized) {
+    powerSave.value = normalized
+  }
+  try { localStorage.setItem('ride_power_save', JSON.stringify(!!powerSave.value)) } catch (e) {}
+  return true
 }
 
 function applyTelemetry(payload) {
